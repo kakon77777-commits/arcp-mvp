@@ -1,0 +1,30 @@
+{
+  "name": "arcp-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ARCP x CTCL v0.1 internal MVP - Agent Residence Continuity Protocol, Phase 0 (schema, policy engine, in-memory coordinator, fake adapters)",
+  "author": "Neo.K (許筌崴) / EveMissLab",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.8.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@arcp/schema": "workspace:*",
+    "@arcp/policy-engine": "workspace:*",
+    "@arcp/coordinator": "workspace:*",
+    "@arcp/adapter-ctcl": "workspace:*",
+    "@arcp/adapter-drive": "workspace:*",
+    "@arcp/adapter-model": "workspace:*",
+    "@types/node": "^24",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}
