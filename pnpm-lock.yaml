@@ -17,6 +17,9 @@ importers:
       '@arcp/adapter-model':
         specifier: workspace:*
         version: link:packages/adapters/model
+      '@arcp/control-plane-core':
+        specifier: workspace:*
+        version: link:packages/control-plane-core
       '@arcp/coordinator':
         specifier: workspace:*
         version: link:packages/coordinator
@@ -54,6 +57,12 @@ importers:
         version: link:../../arcp-schema
 
   packages/arcp-schema: {}
+
+  packages/control-plane-core:
+    dependencies:
+      '@arcp/schema':
+        specifier: workspace:*
+        version: link:../arcp-schema
 
   packages/coordinator:
     dependencies:
