@@ -19,7 +19,7 @@ const LEGAL_TRANSITIONS: Record<AgentState, AgentState[]> = {
   Hydrating: ['Deliberating'],
   Deliberating: ['Acting'],
   Acting: ['Committing', 'Suspended'],
-  Committing: ['Dormant', 'Waiting'],
+  Committing: ['Dormant', 'Waiting', 'Suspended'],
   Waiting: ['Dormant', 'Triggered'],
   Degraded: [],
   Suspended: [],
