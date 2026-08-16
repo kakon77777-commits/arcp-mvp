@@ -29,6 +29,12 @@ export class LeaseManager {
   isValidFencingToken(token: number): boolean {
     return this.current !== null && this.current.fencing_token === token;
   }
+
+  assertValidFencingToken(token: number): void {
+    if (!this.isValidFencingToken(token)) {
+      throw new StaleFencingTokenError(token, this.current?.fencing_token ?? null);
+    }
+  }
 }
 
 export class StaleFencingTokenError extends Error {
