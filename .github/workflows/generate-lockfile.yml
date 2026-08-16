@@ -3,12 +3,17 @@ name: generate-lockfile
 on:
   push:
 
+permissions:
+  contents: write
+
 jobs:
   generate:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: phase0-hardening-phase1-foundation
       - uses: pnpm/action-setup@v4
         with:
           version: 11.8.0
@@ -16,9 +21,14 @@ jobs:
         with:
           node-version: 24
       - run: pnpm install --lockfile-only --no-frozen-lockfile
-      - name: Emit generated lockfile
+      - name: Commit generated lockfile if changed
         run: |
-          echo 'LOCKFILE_BASE64_BEGIN'
-          base64 -w0 pnpm-lock.yaml
-          echo
-          echo 'LOCKFILE_BASE64_END'
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "pnpm-lock.yaml is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pnpm-lock.yaml
+          git commit -m "build: regenerate pnpm lockfile"
+          git push origin HEAD:phase0-hardening-phase1-foundation
