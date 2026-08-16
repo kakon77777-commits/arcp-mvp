@@ -114,6 +114,10 @@ export class AgentCoordinator {
         status: 'active',
       };
 
+      // Re-check ownership at the last safe point before the durable commit.
+      // If another writer acquired a newer lease, the stale turn is fenced out.
+      this.lease.assertValidFencingToken(lease.fencing_token);
+
       // The commit boundary starts here. All potentially failing preparation
       // above has completed without changing store-visible state.
       for (const action of input.actions) this.store.recordAction(action.idempotency_key);
