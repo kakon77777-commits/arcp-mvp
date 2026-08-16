@@ -56,6 +56,10 @@ export class AgentCoordinator {
    * manifest. A duplicate wake (by idempotency_key) short-circuits to the
    * already-committed manifest without doing any new work — this is what
    * makes redelivery of the same wake produce exactly one run.
+   *
+   * Commit data is fully prepared before the in-memory store is mutated. This
+   * preserves the Phase 0 atomic-commit invariant and mirrors the CAS boundary
+   * that Phase 1 will enforce in durable storage.
    */
   runTurn(input: AgentTurnInput): ResidenceManifest {
     if (this.store.isDuplicateWake(input.wake.idempotency_key)) {
@@ -78,19 +82,15 @@ export class AgentCoordinator {
           throw new DuplicateActionError(action.idempotency_key);
         }
       }
-      for (const action of input.actions) {
-        this.store.recordAction(action.idempotency_key);
-      }
 
       this.transition('Committing');
-      for (const event of input.events) this.store.addEvent(event);
-      for (const version of input.objectVersions) this.store.addObjectVersion(version);
-      this.store.recordWake(input.wake.idempotency_key);
 
+      // Prepare the complete next commit before mutating any durable state.
       const priorManifest = this.store.latestManifest();
       const eventCursor = input.events.at(-1)?.event_id ?? priorManifest?.event_cursor ?? 'arcp:event:genesis';
+      const prospectiveObjectVersions = [...this.store.objectVersions, ...input.objectVersions];
       const rootHash = computeRootHash({
-        objectVersions: this.store.objectVersions.map((v) => ({
+        objectVersions: prospectiveObjectVersions.map((v) => ({
           object_id: v.object_id,
           version: v.version,
           content_hash: v.content_hash,
@@ -113,11 +113,19 @@ export class AgentCoordinator {
         lease_fencing_token: lease.fencing_token,
         status: 'active',
       };
+
+      // The commit boundary starts here. All potentially failing preparation
+      // above has completed without changing store-visible state.
+      for (const action of input.actions) this.store.recordAction(action.idempotency_key);
+      for (const event of input.events) this.store.addEvent(event);
+      for (const version of input.objectVersions) this.store.addObjectVersion(version);
+      this.store.recordWake(input.wake.idempotency_key);
       this.store.commitManifest(manifest);
+
       this.transition('Dormant');
       return manifest;
     } catch (error) {
-      if (this.state === 'Acting') {
+      if (this.state === 'Acting' || this.state === 'Committing') {
         this.transition('Suspended');
       }
       throw error;
