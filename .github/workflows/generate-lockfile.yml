@@ -1,0 +1,24 @@
+name: generate-lockfile
+
+on:
+  push:
+
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --lockfile-only --no-frozen-lockfile
+      - name: Emit generated lockfile
+        run: |
+          echo 'LOCKFILE_BASE64_BEGIN'
+          base64 -w0 pnpm-lock.yaml
+          echo
+          echo 'LOCKFILE_BASE64_END'
