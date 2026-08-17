@@ -114,17 +114,17 @@
 
 **Bug found and fixed in already-merged Task 2/3 code, only surfaced by Task 5B's real end-to-end wire-up:** `coordinator-client.ts`'s `acceptWake` expected `policy_decision`/`committed_version` nested inside `result`, but `http.ts` actually places them at the envelope's top level (consistent with how manifest/status reads already work). Each side's own unit tests only checked it against its own assumption — `coordinator-client.test.ts` mocked a transport with the wrong shape, so nothing had exercised the real produced-by-http.ts / consumed-by-coordinator-client.ts pair together until a real Worker→DO→D1 request went through all the layers at once. Fixed the consumer (`isWakeResult` now checks only `result.status`; `policy_decision`/`committed_version` are read from the envelope) and corrected the stale test mock to match.
 
-### Task 6: Explicit human/live-integration gates — NOT NEEDED YET
+### Task 6: Explicit human/live-integration gates
 
-#### Gate A — first Cloudflare deployment
+#### Gate A — first Cloudflare deployment — COMPLETE 2026-08-17
 
-Only when Task 5B is green and the team is ready for the first remote deploy:
+- [x] Run `npx wrangler whoami` on the user's machine. Already authenticated (`neokpolaris@gmail.com`, account `97e5df19575474a8fb0b047c16e701e7`) — no login step was needed.
+- [x] If unauthenticated, perform `npx wrangler login`. (Not needed — already logged in.)
+- [x] Provision the dev D1 database and R2 bucket. `arcp-mvp-metadata` (D1, region APAC) and `arcp-mvp-objects` (R2, Standard class) created; `migrations/d1/0001_init.sql` applied to the real remote database.
+- [x] Insert real binding identifiers through the chosen deployment configuration/secrets path. Real IDs live only in `packages/adapters/cloudflare/wrangler.local.jsonc`, gitignored — the committed `wrangler.jsonc` keeps its `REPLACE_ME_*` placeholders. Regenerate the local file from the template rather than ever filling real values into the tracked one.
+- [x] Deploy only after local contract tests remain green. 103/103 passing beforehand; deployed with `wrangler deploy --config wrangler.local.jsonc`.
 
-- [ ] Run `npx wrangler whoami` on the user's machine.
-- [ ] If unauthenticated, perform `npx wrangler login`.
-- [ ] Provision the dev D1 database and R2 bucket.
-- [ ] Insert real binding identifiers through the chosen deployment configuration/secrets path.
-- [ ] Deploy only after local contract tests remain green.
+**Live**: `https://arcp-mvp-control-plane.neokpolaris.workers.dev`. Verified with real HTTP requests (not just the deploy log): `/api/v1/health` → 200; manifest read without auth → 401; manifest read for a never-woken agent → 404; wake submission → 202 `accepted`; identical redelivery → 200 `duplicate`. Then queried the **real remote D1 database directly** (`wrangler d1 execute ... --remote`) and confirmed the `wake.accepted` event actually persisted (`served_by_region: APAC`, `served_by_colo: NRT`) — full request → Worker → Durable Object → D1 loop confirmed end to end on live infrastructure, not just locally.
 
 #### Gate B — first live Google Drive adapter test
 
