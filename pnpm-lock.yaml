@@ -14,9 +14,6 @@ importers:
       '@arcp/adapter-ctcl':
         specifier: workspace:*
         version: link:packages/adapters/ctcl
-      '@arcp/adapter-drive':
-        specifier: workspace:*
-        version: link:packages/adapters/drive
       '@arcp/adapter-google-drive-api':
         specifier: workspace:*
         version: link:packages/adapters/google-drive-api
@@ -74,8 +71,6 @@ importers:
       '@arcp/schema':
         specifier: workspace:*
         version: link:../../arcp-schema
-
-  packages/adapters/drive: {}
 
   packages/adapters/google-drive-api:
     dependencies:
