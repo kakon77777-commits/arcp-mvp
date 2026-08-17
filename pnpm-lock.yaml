@@ -32,6 +32,9 @@ importers:
       '@arcp/policy-engine':
         specifier: workspace:*
         version: link:packages/policy-engine
+      '@arcp/residence-bridge':
+        specifier: workspace:*
+        version: link:packages/residence-bridge
       '@arcp/residence-storage':
         specifier: workspace:*
         version: link:packages/residence-storage
@@ -102,6 +105,12 @@ importers:
       '@arcp/schema':
         specifier: workspace:*
         version: link:../arcp-schema
+
+  packages/residence-bridge:
+    dependencies:
+      '@arcp/residence-storage':
+        specifier: workspace:*
+        version: link:../residence-storage
 
   packages/residence-storage: {}
 
