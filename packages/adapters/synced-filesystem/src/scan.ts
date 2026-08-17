@@ -55,6 +55,7 @@ async function fileEntry(
 }
 
 async function scanDirectory(
+  rootRealPath: string,
   absoluteDirectory: string,
   relativeDirectory: string,
   entries: ResidenceStorageEntry[],
@@ -69,10 +70,7 @@ async function scanDirectory(
       throw invalidPath(`symbolic links and junctions are not allowed in residence snapshots: ${relativePath}`);
     }
 
-    const absolutePath = await resolveResidencePath(
-      relativeDirectory === '' ? absoluteDirectory : absoluteDirectory.slice(0, -(relativeDirectory.length + 1)),
-      relativePath,
-    );
+    const absolutePath = await resolveResidencePath(rootRealPath, relativePath);
     const stats = await lstat(absolutePath);
     if (stats.isSymbolicLink()) {
       throw invalidPath(`symbolic links and junctions are not allowed in residence snapshots: ${relativePath}`);
@@ -80,7 +78,7 @@ async function scanDirectory(
 
     if (stats.isDirectory()) {
       entries.push(directoryEntry(relativePath, stats));
-      await scanDirectory(absolutePath, relativePath, entries);
+      await scanDirectory(rootRealPath, absolutePath, relativePath, entries);
       continue;
     }
 
@@ -100,7 +98,7 @@ export async function scanResidenceRoot(
   const entries: ResidenceStorageEntry[] = [];
 
   if (prefix === undefined || prefix === '') {
-    await scanDirectory(rootRealPath, '', entries);
+    await scanDirectory(rootRealPath, rootRealPath, '', entries);
     return entries.sort((left, right) => left.path.localeCompare(right.path));
   }
 
@@ -122,7 +120,7 @@ export async function scanResidenceRoot(
     entries.push(await fileEntry(absolutePrefix, prefix, stats));
   } else if (stats.isDirectory()) {
     entries.push(directoryEntry(prefix, stats));
-    await scanDirectory(absolutePrefix, prefix, entries);
+    await scanDirectory(rootRealPath, absolutePrefix, prefix, entries);
   } else {
     throw invalidPath(`unsupported filesystem entry inside residence root: ${prefix}`);
   }
