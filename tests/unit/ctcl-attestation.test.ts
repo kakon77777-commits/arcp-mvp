@@ -8,11 +8,20 @@ async function makeSignedEvidence(): Promise<{
   evidence: TemporalEvidence;
   publicJwk: webcrypto.JsonWebKey;
 }> {
-  const keyPair = (await crypto.subtle.generateKey(
+  const generated = (await crypto.subtle.generateKey(
     { name: 'Ed25519' },
     true,
     ['sign', 'verify'],
-  )) as webcrypto.CryptoKeyPair;
+  )) as unknown;
+  if (
+    typeof generated !== 'object' ||
+    generated === null ||
+    !('privateKey' in generated) ||
+    !('publicKey' in generated)
+  ) {
+    throw new Error('Ed25519 test key generation did not return a key pair');
+  }
+  const keyPair = generated as webcrypto.CryptoKeyPair;
   const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
 
   const evidence: TemporalEvidence = {
