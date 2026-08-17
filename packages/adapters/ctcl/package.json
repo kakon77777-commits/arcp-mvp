@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
-    "@arcp/schema": "workspace:*"
+    "@arcp/schema": "workspace:*",
+    "@arcp/temporal-evidence": "workspace:*"
   }
 }
