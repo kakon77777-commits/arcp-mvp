@@ -552,3 +552,5 @@ Phase 2 is structurally successful when:
 Execution is defined in:
 
 `docs/superpowers/plans/2026-08-17-phase2-residence-storage-implementation.md`
+
+The implementation plan is approved for execution. The Google Drive adapter's revision mapping is governed by §7.3 above if any earlier planning text is less specific.
