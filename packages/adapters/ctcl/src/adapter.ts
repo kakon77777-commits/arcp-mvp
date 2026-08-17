@@ -10,6 +10,7 @@ import {
   type TemporalEvidence,
   type TemporalEvidencePort,
 } from '@arcp/temporal-evidence';
+import { parseCtclPublicJwk, verifyTemporalEvidenceAttestation } from './attestation.js';
 import { CtclHttpClient, type CtclHttpClientOptions } from './http.js';
 import {
   normalizeCtclBoundary,
@@ -83,5 +84,14 @@ export class CtclRestTemporalAdapter implements TemporalEvidencePort {
         constraints: input.constraints,
       }),
     );
+  }
+
+  async getPublicKey(): Promise<JsonWebKey> {
+    return parseCtclPublicJwk(await this.http.get('/v1/pubkey'));
+  }
+
+  async verifyEvidence(evidence: TemporalEvidence, publicJwk?: JsonWebKey): Promise<TemporalEvidence> {
+    const jwk = publicJwk ?? (await this.getPublicKey());
+    return verifyTemporalEvidenceAttestation(evidence, jwk);
   }
 }
