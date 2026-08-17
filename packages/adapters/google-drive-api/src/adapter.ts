@@ -155,7 +155,10 @@ export class GoogleDriveApiAdapter implements ResidenceStorageAdapter {
       );
     }
 
-    if (!sawChange) {
+    // previous.entries only reflects the scope (if any) that produced it. Without
+    // that provenance we cannot safely echo it back under a different scope, so the
+    // no-rebuild shortcut is only valid when this call is unscoped.
+    if (!sawChange && scope === undefined) {
       return {
         snapshot: {
           backendKind: this.backendKind,
@@ -224,14 +227,24 @@ export class GoogleDriveApiAdapter implements ResidenceStorageAdapter {
         throw conflict(`revision precondition failed for ${path}`);
       }
     }
+
+    // Memoized: verifiedSha256() may download the full file when Drive has no
+    // native sha256Checksum, and both the precondition check and the unchanged
+    // check below need the same value for the same `existing` node.
+    let existingHash: string | undefined;
+    const verifiedExistingHash = async (): Promise<string> => {
+      existingHash ??= await this.verifiedSha256(existing!);
+      return existingHash;
+    };
+
     if (options.ifContentHash !== undefined) {
-      if (existing === undefined || (await this.verifiedSha256(existing)) !== options.ifContentHash) {
+      if (existing === undefined || (await verifiedExistingHash()) !== options.ifContentHash) {
         throw conflict(`content hash precondition failed for ${path}`);
       }
     }
 
     const intendedHash = await sha256Bytes(bytes);
-    if (existing !== undefined && (await this.verifiedSha256(existing)) === intendedHash) {
+    if (existing !== undefined && (await verifiedExistingHash()) === intendedHash) {
       return {
         status: 'unchanged',
         ref: existing.entry.ref,

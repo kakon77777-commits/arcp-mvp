@@ -260,6 +260,39 @@ describe('GoogleDriveApiAdapter', () => {
     await expect(adapter.snapshot()).rejects.toMatchObject({ code: 'conflict' });
   });
 
+  it('rebuilds instead of echoing a stale scope when a differently-scoped diff sees no provider changes', async () => {
+    const transport = new InMemoryGoogleDriveTransport('root-id', [
+      { record: fakeGoogleDriveRecord({ id: 'folder-a', name: 'a', mimeType: GOOGLE_DRIVE_FOLDER_MIME, parents: ['root-id'], size: null }) },
+      { record: fakeGoogleDriveRecord({ id: 'folder-b', name: 'b', mimeType: GOOGLE_DRIVE_FOLDER_MIME, parents: ['root-id'], size: null }) },
+      { record: fakeGoogleDriveRecord({ id: 'x', name: 'x.txt', parents: ['folder-a'], sha256Checksum: 'abc' }), bytes: bytes('x') },
+      { record: fakeGoogleDriveRecord({ id: 'y', name: 'y.txt', parents: ['folder-b'], sha256Checksum: 'def' }), bytes: bytes('y') },
+    ]);
+    const adapter = new GoogleDriveApiAdapter({ transport, rootId: 'root-id' });
+
+    const baselineScopedToA = await adapter.snapshot({ prefix: 'a' });
+    expect(baselineScopedToA.entries.map((entry) => entry.path)).toEqual(['a', 'a/x.txt']);
+
+    const result = await adapter.diff(baselineScopedToA, { prefix: 'b' });
+
+    expect(result.snapshot.entries.map((entry) => entry.path)).toEqual(['b', 'b/y.txt']);
+  });
+
+  it('verifies existing content at most once per write when a matching ifContentHash and the unchanged check both need it', async () => {
+    const transport = new InMemoryGoogleDriveTransport('root-id', [
+      { record: fakeGoogleDriveRecord({ id: 'note', name: 'note.txt', parents: ['root-id'] }), bytes: bytes('same') },
+    ]);
+    const adapter = new GoogleDriveApiAdapter({ transport, rootId: 'root-id' });
+    const snapshot = await adapter.snapshot();
+    const ref = snapshot.entries[0]!.ref;
+    const blob = await adapter.read(ref);
+    transport.calls.length = 0;
+
+    const result = await adapter.write({ path: 'note.txt' }, bytes('same'), { ifContentHash: blob!.contentHash });
+
+    expect(result.status).toBe('unchanged');
+    expect(transport.calls.filter((call) => call.startsWith('download:'))).toEqual(['download:note']);
+  });
+
   it('advertises cursor/stable-ID/provider-confirmation capabilities and Shared Drive mode explicitly', () => {
     const transport = new InMemoryGoogleDriveTransport();
     const personal = new GoogleDriveApiAdapter({ transport, rootId: 'root-id' });
