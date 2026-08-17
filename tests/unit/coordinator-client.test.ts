@@ -29,12 +29,12 @@ const wake: WakeRecord = {
   idempotency_key: 'wake:transport:test:1',
 };
 
-function envelope(result: unknown, committedVersion: number | null = null) {
+function envelope(result: unknown, committedVersion: number | null = null, policyDecision: string | null = null) {
   return new Response(
     JSON.stringify({
       request_id: 'coordinator-response',
       result,
-      policy_decision: null,
+      policy_decision: policyDecision,
       committed_version: committedVersion,
       commit_status: committedVersion === null ? 'pending_coordinator_commit' : 'committed',
     }),
@@ -71,11 +71,10 @@ describe('coordinator transport client', () => {
     const transport: CoordinatorFetchTransport = {
       async fetch(request) {
         requests.push(request);
-        return envelope({
-          status: 'accepted',
-          policy_decision: 'allow-with-log',
-          committed_version: null,
-        });
+        // policy_decision and committed_version are envelope-level fields on
+        // the wire, not nested inside result — result only carries the wake
+        // status itself. See coordinator-client.ts's isWakeResult comment.
+        return envelope({ status: 'accepted' }, null, 'allow-with-log');
       },
     };
     const client = createCoordinatorClient({

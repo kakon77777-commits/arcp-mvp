@@ -77,13 +77,15 @@ function isPolicyDecision(value: unknown): value is PolicyDecision {
   );
 }
 
-function isWakeAcceptance(value: unknown): value is WakeAcceptance {
-  if (!isRecord(value)) return false;
-  return (
-    (value.status === 'accepted' || value.status === 'duplicate') &&
-    isPolicyDecision(value.policy_decision) &&
-    (value.committed_version === null || typeof value.committed_version === 'number')
-  );
+/**
+ * Only `result.status` lives inside `result` on the wire — `policy_decision`
+ * and `committed_version` are envelope-level fields, exactly as they are for
+ * manifest/status reads (see `read()` below, which already takes
+ * `committed_version` from the envelope, not from `result`). A wake response
+ * whose `result` is just `{ status }` is not a partial/malformed payload.
+ */
+function isWakeResult(value: unknown): value is { status: 'accepted' | 'duplicate' } {
+  return isRecord(value) && (value.status === 'accepted' || value.status === 'duplicate');
 }
 
 async function parseJson(response: Response): Promise<unknown> {
@@ -160,10 +162,14 @@ export function createCoordinatorClient(options: CoordinatorClientOptions): Coor
         );
       }
       const body = await parseJson(response);
-      if (!isEnvelope(body) || !isWakeAcceptance(body.result)) {
+      if (!isEnvelope(body) || !isWakeResult(body.result) || !isPolicyDecision(body.policy_decision)) {
         throw new CoordinatorProtocolError('coordinator wake response is malformed', response.status);
       }
-      return body.result;
+      return {
+        status: body.result.status,
+        policy_decision: body.policy_decision,
+        committed_version: body.committed_version,
+      };
     },
   };
 }

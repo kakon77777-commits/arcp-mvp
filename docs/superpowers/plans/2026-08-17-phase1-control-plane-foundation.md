@@ -87,19 +87,32 @@
 - [x] Keep the adapter free of account IDs, resource IDs, and secrets.
 - [x] Run all tests and typecheck.
 
-### Task 5B: Cloudflare storage/runtime bindings — NEXT, STILL CREDENTIAL-FREE
+### Task 5B: Cloudflare storage/runtime bindings — COMPLETE, STILL CREDENTIAL-FREE
 
-This is the next local-AI coding slice. Do **not** ask the user to log in yet.
+**Implemented:**
+- `packages/adapters/cloudflare/src/d1-types.ts`, `d1-metadata-store.ts`
+- `migrations/d1/0001_init.sql`
+- `packages/adapters/cloudflare/src/r2-types.ts`, `r2-object-store.ts`
+- `packages/adapters/cloudflare/src/agent-durable-object-core.ts` (platform-neutral turn/wake logic)
+- `packages/adapters/cloudflare/src/agent-durable-object.ts` (internal HTTP surface, reuses control-plane-core's envelope format)
+- `packages/adapters/cloudflare/src/coordinator-transport.ts` (extracted from index.ts to avoid a circular import from worker.ts)
+- `packages/adapters/cloudflare/src/worker.ts` (public Worker entrypoint + `ArcpAgentDurableObject` class)
+- `packages/adapters/cloudflare/wrangler.jsonc` (template — every ID is `REPLACE_ME_*`)
+- `tests/unit/d1-metadata-store.test.ts`, `r2-object-store.test.ts`, `agent-durable-object.test.ts`, `worker.test.ts`
+- `tests/integration/storage-adapter-parity.test.ts` (D1/R2 vs in-memory, same assertions, both backends)
+- `tests/helpers/fake-d1-database.ts` (real `node:sqlite`-backed D1Database-shaped fake — genuine SQL execution, not a hand-rolled reimplementation), `fake-r2-bucket.ts`
 
-- [ ] Implement `D1MetadataStore` against the existing `MetadataStorePort`.
-- [ ] Add D1 schema/migration for manifest CAS and append-only event rows.
-- [ ] Implement `R2ObjectStore` against the existing `ObjectStorePort`.
-- [ ] Add adapter parity tests against the in-memory reference semantics.
-- [ ] Implement the Durable Object handler that owns per-Agent mutation ordering.
-- [ ] Implement the Worker entrypoint by composing `createControlPlaneHandler()` with the DO transport.
-- [ ] Add a deployment configuration template using a SQLite Durable Object namespace and current declarative `exports` lifecycle syntax.
-- [ ] Keep real D1 database IDs and real R2 bucket names out of committed production configuration until provisioning.
-- [ ] Run local tests/typecheck and, if Wrangler is present, local `wrangler dev`; do not deploy.
+- [x] Implement `D1MetadataStore` against the existing `MetadataStorePort`.
+- [x] Add D1 schema/migration for manifest CAS and append-only event rows.
+- [x] Implement `R2ObjectStore` against the existing `ObjectStorePort`.
+- [x] Add adapter parity tests against the in-memory reference semantics.
+- [x] Implement the Durable Object handler that owns per-Agent mutation ordering. Phase 1 scope: wake acceptance is durably recorded (idempotent, policy-evaluated) but does not run a full Deliberating/Acting turn yet — no model call exists until Phase 4/Gate C — so `committed_version` stays `null` (pending, not a durable manifest commit).
+- [x] Implement the Worker entrypoint by composing `createControlPlaneHandler()` with the DO transport.
+- [x] Add a deployment configuration template using a SQLite Durable Object namespace (`new_sqlite_classes`) and current declarative `exports` lifecycle syntax.
+- [x] Keep real D1 database IDs and real R2 bucket names out of committed production configuration until provisioning.
+- [x] Run local tests/typecheck and, since Wrangler was present, `wrangler deploy --dry-run` (bundles + validates bindings, never uploads) against a temporarily-filled copy of the template; the committed template keeps its `REPLACE_ME_*` placeholders.
+
+**Bug found and fixed in already-merged Task 2/3 code, only surfaced by Task 5B's real end-to-end wire-up:** `coordinator-client.ts`'s `acceptWake` expected `policy_decision`/`committed_version` nested inside `result`, but `http.ts` actually places them at the envelope's top level (consistent with how manifest/status reads already work). Each side's own unit tests only checked it against its own assumption — `coordinator-client.test.ts` mocked a transport with the wrong shape, so nothing had exercised the real produced-by-http.ts / consumed-by-coordinator-client.ts pair together until a real Worker→DO→D1 request went through all the layers at once. Fixed the consumer (`isWakeResult` now checks only `result.status`; `policy_decision`/`committed_version` are read from the envelope) and corrected the stale test mock to match.
 
 ### Task 6: Explicit human/live-integration gates — NOT NEEDED YET
 
@@ -131,10 +144,17 @@ Only in Phase 4 after bounded-run orchestration is provider-neutral and tested:
 
 ## Verified checkpoint
 
-At the end of Task 5A, GitHub CI reports:
+At the end of Task 5A (merged to master as PR #1), CI reported:
 
 - `pnpm install --frozen-lockfile`: pass
 - Vitest: **65 / 65 pass**
 - `pnpm typecheck`: pass
 
-No Cloudflare account, Google OAuth consent, or live model-provider credential was required to reach this checkpoint.
+At the end of Task 5B, local verification reports:
+
+- `pnpm install --frozen-lockfile`: pass
+- Vitest: **103 / 103 pass** (18 files)
+- `pnpm typecheck`: pass
+- `wrangler deploy --dry-run`: bundle builds (44.25 KiB), all three bindings resolve (`AGENTS` Durable Object, `DB` D1, `OBJECTS` R2) — run against a temporarily-filled local copy of `wrangler.jsonc`; the committed template keeps `REPLACE_ME_*` placeholders, never a real account ID, database ID, or bucket name.
+
+No Cloudflare account, Google OAuth consent, or live model-provider credential was required to reach either checkpoint.

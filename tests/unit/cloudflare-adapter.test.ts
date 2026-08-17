@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CloudflareCoordinatorTransport,
   type DurableObjectNamespaceLike,
-} from '../../packages/adapters/cloudflare/src/index.js';
+} from '@arcp/adapter-cloudflare';
 
 const agentId = 'arcp:agent:evemisslab:00000000-0000-4000-8000-000000000601';
 
