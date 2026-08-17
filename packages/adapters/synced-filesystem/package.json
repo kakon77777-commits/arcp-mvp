@@ -1,5 +1,5 @@
 {
-  "name": "@arcp/adapter-drive",
+  "name": "@arcp/adapter-synced-filesystem",
   "version": "0.1.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -10,5 +10,8 @@
       "import": "./src/index.ts",
       "default": "./src/index.ts"
     }
+  },
+  "dependencies": {
+    "@arcp/residence-storage": "workspace:*"
   }
 }

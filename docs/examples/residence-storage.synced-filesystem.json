@@ -1,0 +1,8 @@
+{
+  "residence_storage": {
+    "backend": "synced-filesystem",
+    "root_env": "ARCP_RESIDENCE_ROOT",
+    "reconciliation_interval_ms": 30000,
+    "watch_debounce_ms": 500
+  }
+}

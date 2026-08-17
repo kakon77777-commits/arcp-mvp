@@ -1,0 +1,8 @@
+{
+  "residence_storage": {
+    "backend": "google-drive-api",
+    "root_id_env": "ARCP_GOOGLE_DRIVE_ROOT_ID",
+    "drive_id_env": "ARCP_GOOGLE_DRIVE_SHARED_DRIVE_ID",
+    "credential_provider": "external-access-token-provider"
+  }
+}
