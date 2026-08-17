@@ -39,6 +39,15 @@ describe('residence storage reference semantics', () => {
     await runResidenceStorageConformance(async () => new InMemoryResidenceStorageAdapter());
   });
 
+  it('satisfies the shared adapter conformance contract with synced filesystem mutations', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arcp-residence-conformance-'));
+    try {
+      await runResidenceStorageConformance(async () => new SyncedFilesystemAdapter({ root }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes synced filesystem snapshot/read observations through the provider-neutral shapes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'arcp-residence-parity-'));
     try {
@@ -54,12 +63,13 @@ describe('residence storage reference semantics', () => {
 
       expect(observed.backendKind).toBe('synced-filesystem');
       expect(observed.observedAt).toBe('2026-08-17T09:45:00.000Z');
-      expect(file).toMatchObject({ kind: 'file', ref: 'fs:notes%2Fbridge.txt' });
+      expect(file).toMatchObject({ kind: 'file', ref: 'fs:notes%2Fbridge.txt', revision: null });
 
       const blob = await adapter.read(file!.ref);
       expect(blob?.path).toBe('notes/bridge.txt');
       expect(new TextDecoder().decode(blob?.bytes)).toBe('bridge-evidence');
       expect(blob?.contentHash).toBe(file?.contentHash);
+      expect(blob?.revision).toBeNull();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
