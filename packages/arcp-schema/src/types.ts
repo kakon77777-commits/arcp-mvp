@@ -24,13 +24,22 @@ export interface SourceQuality {
   source_class: string;
   precision: string;
   estimated_uncertainty_ns?: number;
+  synchronized?: boolean;
 }
 
 export interface InstantRef {
   instant_id: string;
-  timescale?: 'utc';
-  encoding?: 'unix_ms' | 'unix_ns';
+  timescale?: 'utc' | 'posix';
+  encoding?: 'unix_s' | 'unix_ms' | 'unix_us' | 'unix_ns' | 'rfc3339';
+  value?: string;
   source_quality?: SourceQuality;
+  attestation?: {
+    alg: string;
+    key_id: string;
+    signed_fields: string;
+    value: string;
+    verified?: boolean;
+  };
   unverified?: boolean;
 }
 
