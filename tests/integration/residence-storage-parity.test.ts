@@ -35,6 +35,15 @@ describe('residence storage reference semantics', () => {
     await runResidenceStorageConformance(async () => new InMemoryResidenceStorageAdapter());
   });
 
+  it('reports backend removal as evidence without performing any canonical action', async () => {
+    const adapter = new InMemoryResidenceStorageAdapter();
+    await adapter.write({ path: 'paper.md' }, new TextEncoder().encode('draft'));
+    const baseline = await adapter.snapshot();
+    await adapter.remove({ path: 'paper.md' });
+    const result = await adapter.diff(baseline);
+    expect(result.diff.removed.map((item) => item.path)).toEqual(['paper.md']);
+  });
+
   it('classifies stable refs deterministically as moved, changed, added, and removed', () => {
     const previous = snapshot([
       entry({ ref: 'stable:moved', path: 'z-old.txt', contentHash: 'sha256:moved' }),
