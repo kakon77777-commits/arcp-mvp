@@ -1,4 +1,4 @@
-import { watch } from 'node:fs';
+import { watch, type FSWatcher } from 'node:fs';
 
 export interface ResidenceWatchHintSource {
   start(onHint: () => void, signal: AbortSignal): Promise<void>;
@@ -10,6 +10,7 @@ export interface NodeFsWatchHintSourceOptions {
 
 export class NodeFsWatchHintSource implements ResidenceWatchHintSource {
   private readonly root: string;
+  private watcher: FSWatcher | undefined;
 
   constructor(options: NodeFsWatchHintSourceOptions) {
     this.root = options.root;
@@ -19,7 +20,7 @@ export class NodeFsWatchHintSource implements ResidenceWatchHintSource {
     if (signal.aborted) return;
 
     try {
-      const watcher = watch(
+      this.watcher = watch(
         this.root,
         { recursive: true, signal },
         () => {
@@ -30,14 +31,20 @@ export class NodeFsWatchHintSource implements ResidenceWatchHintSource {
       // Watcher events are latency hints only. An asynchronous watcher failure
       // must not become a residence-storage failure because periodic scans are
       // the correctness path.
-      watcher.on('error', () => {
+      this.watcher.on('error', () => {
         try {
-          watcher.close();
+          this.watcher?.close();
         } catch {
           // Best-effort shutdown only.
+        } finally {
+          this.watcher = undefined;
         }
       });
+      this.watcher.on('close', () => {
+        this.watcher = undefined;
+      });
     } catch {
+      this.watcher = undefined;
       // Some filesystems/platforms cannot provide recursive fs.watch(). In
       // that case silently degrade to periodic reconciliation.
     }
