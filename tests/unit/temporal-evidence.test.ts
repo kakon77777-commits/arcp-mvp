@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DeterministicTemporalEvidenceAdapter } from '@arcp/adapter-ctcl';
 import {
   TemporalEvidenceError,
   createDegradedLocalEvidence,
@@ -30,5 +31,54 @@ describe('@arcp/temporal-evidence', () => {
     expect(error.name).toBe('TemporalEvidenceError');
     expect(error.code).toBe('temporarily_unavailable');
     expect(error.retryable).toBe(true);
+  });
+});
+
+describe('DeterministicTemporalEvidenceAdapter', () => {
+  it('advances deterministically without reading the wall clock', async () => {
+    const adapter = new DeterministicTemporalEvidenceAdapter({
+      startUnixMs: 1_786_980_000_000,
+      stepMs: 25,
+    });
+
+    const first = await adapter.now();
+    const second = await adapter.now();
+
+    expect(first.instant.value).toBe('1786980000000');
+    expect(first.canonicalUnixNs).toBe('1786980000000000000');
+    expect(second.instant.value).toBe('1786980000025');
+    expect(second.canonicalUnixNs).toBe('1786980000025000000');
+    expect(first.instant.instant_id).not.toBe(second.instant.instant_id);
+    expect(first.verification).toBe('provider-asserted');
+  });
+
+  it('registers and later retrieves the same deterministic Common Instant', async () => {
+    const adapter = new DeterministicTemporalEvidenceAdapter({ startUnixMs: 1_786_980_000_000 });
+
+    const registered = await adapter.registerInstant({
+      value: '1786980000.250',
+      encoding: 'unix_s',
+      label: 'handoff',
+    });
+    const retrieved = await adapter.getInstant(registered.instant.instant_id);
+
+    expect(retrieved.instant.instant_id).toBe(registered.instant.instant_id);
+    expect(retrieved.canonicalUnixNs).toBe(registered.canonicalUnixNs);
+  });
+
+  it('returns deterministic fixture transformations without network access', async () => {
+    const adapter = new DeterministicTemporalEvidenceAdapter();
+
+    await expect(adapter.convert({
+      input: { value: '1786980000000', encoding: 'unix_ms', timescale: 'posix' },
+      output: { encoding: 'unix_ns', timescale: 'posix' },
+    })).resolves.toEqual({
+      value: '1786980000000000000',
+      canonicalUnixNs: '1786980000000000000',
+      lossless: true,
+    });
+
+    await expect(adapter.inspectBoundary({ timezone: 'Asia/Taipei', localValue: '2026-08-18T00:00:00' }))
+      .resolves.toMatchObject({ status: 'normal', safe: true });
   });
 });
