@@ -11,24 +11,23 @@ Phase 2 must stop treating Google Drive API as the only future residence-storage
 
 ARCP's protocol responsibility is to preserve and reconcile residence state. It should not require every deployment to use the same transport, credential model, or synchronization product.
 
-The revised Phase 2 therefore introduces a provider-neutral residence storage boundary with two first-class initial backends:
+The revised Phase 2 introduces a provider-neutral residence storage boundary with two first-class initial backends:
 
 1. **Synced Filesystem Residence** — recommended for local-first deployments that already expose a synchronized directory through the operating system.
 2. **Google Drive API Residence** — optional cloud-native/headless backend for deployments that do not want a local sync client or need Google-specific capabilities.
 
-The existing Google Drive direction is retained, but demoted from protocol assumption to optional backend implementation.
+The existing Google Drive direction is retained, but moves from protocol assumption to optional backend implementation.
 
-## 2. Core architectural decision
-
-ARCP core must depend on a provider-neutral contract:
+## 2. Core architecture
 
 ```text
 ARCP Residence Runtime
         |
         v
+@arcp/residence-storage
 ResidenceStorageAdapter
         |
-        +--> SyncedFilesystemAdapter
+        +--> @arcp/adapter-synced-filesystem
         |        +--> Google Drive for desktop
         |        +--> OneDrive
         |        +--> Dropbox
@@ -36,47 +35,101 @@ ResidenceStorageAdapter
         |        +--> NAS/local replication
         |        +--> other mounted/synchronized folders
         |
-        +--> GoogleDriveApiAdapter
+        +--> @arcp/adapter-google-drive-api
                  +--> OAuth / service account
                  +--> Drive Changes API
                  +--> Shared Drives
                  +--> Google-native metadata/capabilities
 ```
 
-The protocol must never infer that a specific backend is canonical merely because it is Google Drive, a mounted folder, or a remote API.
+ARCP must never infer that a backend is canonical merely because it is Google Drive, a mounted folder, or a remote API.
 
 Canonical role, lineage, policy, lease/fencing, commit semantics, and ARCP event history remain owned by ARCP.
 
-## 3. Terminology
+## 3. Fixed package boundaries
 
-### 3.1 Residence storage backend
+The first implementation uses these package names and responsibilities.
 
-A component that can observe and/or mutate a storage namespace used by an ARCP residence.
+### `packages/residence-storage` → `@arcp/residence-storage`
+
+Owns only provider-neutral contracts and reference semantics:
+
+- `ResidenceStorageAdapter`
+- provider-neutral snapshot/diff/ref/receipt/error/capability types
+- `InMemoryResidenceStorageAdapter`
+- reusable backend conformance test helpers where practical
+
+It must not import Google APIs, Node filesystem APIs, Cloudflare bindings, OAuth libraries, or synchronization-provider SDKs.
+
+### `packages/adapters/synced-filesystem` → `@arcp/adapter-synced-filesystem`
+
+Owns local filesystem observation/mutation:
+
+- root confinement
+- snapshot/diff
+- read/write/remove
+- content hashing
+- watcher hints
+- periodic reconciliation
+- filesystem conflict detection
+
+It must remain provider-blind. Google Drive for desktop, OneDrive, Dropbox, Syncthing, and similar products appear only as external sync transports around the same filesystem adapter.
+
+### `packages/adapters/google-drive-api` → `@arcp/adapter-google-drive-api`
+
+Owns direct Google Drive integration:
+
+- authentication boundary
+- Drive Changes API
+- Drive file IDs and cursors
+- pagination/rate limits
+- Shared Drives
+- Google-native metadata/capabilities
+- translation into provider-neutral residence-storage records
+
+### Existing `packages/adapters/drive`
+
+This package is a **migration source**, not a fourth permanent backend.
+
+Its current fake Drive types/behavior will be split as follows:
+
+- generic fixture behavior migrates into `@arcp/residence-storage` as `InMemoryResidenceStorageAdapter`;
+- Drive-specific fixture concepts migrate into `@arcp/adapter-google-drive-api` tests;
+- once downstream imports are migrated and tests are green, `packages/adapters/drive` is removed from the active workspace;
+- git history and PR history retain the original Google-first design.
+
+No second long-lived Phase 2 branch is maintained for the old design.
+
+## 4. Terminology
+
+### 4.1 Residence storage backend
+
+A component that observes and/or mutates a storage namespace used by an ARCP residence.
 
 A backend is a transport/storage capability, not an authority over ARCP identity or truth.
 
-### 3.2 Local synchronized filesystem
+### 4.2 Local synchronized filesystem
 
 A normal filesystem path visible to the local ARCP process whose contents may also be synchronized by an external product.
 
 Examples include a mirrored Google Drive directory, OneDrive folder, Dropbox folder, Syncthing directory, or NAS-backed mounted path.
 
-ARCP does **not** assume that a successful local write means the cloud provider has already uploaded the bytes.
+ARCP does **not** assume that a successful local write means the external provider has already replicated the bytes.
 
-### 3.3 Cloud API backend
+### 4.3 Cloud API backend
 
 A backend that talks directly to a provider's remote API and therefore owns provider authentication, pagination, rate-limit handling, remote change cursors, and provider-specific metadata translation.
 
-## 4. Product modes
+## 5. Product modes
 
-A residence chooses a backend per residence configuration, not globally for the entire ARCP installation.
+A residence chooses its backend per residence configuration, not globally for the entire ARCP installation.
 
 ### Mode A — Local synced folder
 
 Recommended default for local-first deployments.
 
 ```text
-Local ARCP Agent
+Local ARCP Agent / Bridge
       |
       v
 SyncedFilesystemAdapter
@@ -95,41 +148,39 @@ Advantages:
 
 - no ARCP-owned OAuth flow;
 - works with multiple sync vendors using one adapter;
-- ordinary filesystem semantics are easy to inspect and recover;
-- keeps local operation available when the cloud API is unavailable;
-- aligns with ARCP local-first residence semantics.
+- ordinary filesystem semantics are inspectable and recoverable;
+- local operation can continue when a provider API is unavailable;
+- aligns with local-first residence semantics.
 
 Limitations:
 
-- requires a local machine/process and a mounted directory;
+- requires a local process and mounted directory;
 - remote sync completion is external and may be eventual;
 - provider-native permissions, revisions, comments, Shared Drive metadata, and Google-native document semantics are not automatically available.
 
 ### Mode B — Google Drive API
 
-Recommended for headless/cloud-only deployments or deployments that explicitly need Google-specific features.
+Recommended for headless/cloud-only deployments or deployments explicitly requiring Google-specific features.
 
 Advantages:
 
-- does not require Google Drive for desktop;
-- can operate when no user's desktop machine is online;
+- no Google Drive for desktop requirement;
+- can operate when the user's desktop is offline;
 - supports Drive-native change cursors, permissions, Shared Drives, and provider metadata;
-- suitable for server-side workers/bridges that cannot access a user's local filesystem.
+- suitable for server-side components that cannot access a user's local filesystem.
 
 Limitations:
 
-- requires OAuth or another approved authentication mode;
+- requires an approved authentication mode;
 - must handle token lifecycle, provider rate limits, API semantics, and provider outages;
-- is Google-specific and therefore must remain behind the common interface.
+- remains Google-specific behind the common interface.
 
-## 5. Backend contract
+## 6. Provider-neutral backend contract
 
-Phase 2 should introduce a new package-level contract instead of extending the current `FakeDriveAdapter` directly.
-
-Suggested conceptual interface:
+`@arcp/residence-storage` defines this public contract shape:
 
 ```ts
-interface ResidenceStorageAdapter {
+export interface ResidenceStorageAdapter {
   readonly backendKind: string;
 
   snapshot(scope: ResidenceStorageScope): Promise<ResidenceStorageSnapshot>;
@@ -156,103 +207,103 @@ interface ResidenceStorageAdapter {
 }
 ```
 
-Exact names may change during implementation, but the following semantics are required.
+These names are fixed for the Phase 2 implementation plan. Later revisions may version the interface, but Phase 2 does not rename them opportunistically during coding.
 
-### 5.1 Snapshot
+### 6.1 Snapshot
 
 A snapshot is an observed backend state, not an ARCP canonical commit.
 
-It should contain enough stable metadata to reconcile later:
+It contains enough stable metadata for later reconciliation:
 
 - backend-specific stable reference when available;
 - normalized relative path;
-- file/directory type;
+- entry kind;
 - size;
 - modification metadata;
 - content hash when known;
 - backend revision/cursor when available;
-- observation timestamp and source.
+- observation timestamp and source/backend kind.
 
-### 5.2 Diff
+### 6.2 Diff
 
-Diff reports observed `added`, `changed`, `removed`, and where necessary `renamed/moved` candidates.
+Diff reports `added`, `changed`, `removed`, and `moved` candidates.
 
-Backend diff output is evidence for reconciliation. It must not directly tombstone canonical ARCP objects without the ARCP reconciliation/policy layer deciding that outcome.
+Backend diff output is reconciliation evidence. It must not directly tombstone canonical ARCP objects without the ARCP reconciliation/policy layer deciding the canonical transition.
 
-### 5.3 Read/write/remove
+### 6.3 Read/write/remove
 
-Every mutation returns a receipt. A successful storage write means only that the selected backend accepted/completed the operation according to its own contract.
+Every mutation returns a receipt.
 
-It does not by itself mean:
+A successful storage write means only that the selected backend completed or accepted the operation under its backend contract.
+
+It does not imply:
 
 ```text
 storage write success
-    == cloud replica confirmed
+    == external replica confirmed
     == ARCP canonical commit
     == policy approval
     == lineage update
 ```
 
-These states must remain distinguishable.
+These states remain distinguishable.
 
-## 6. SyncedFilesystemAdapter design
+## 7. `SyncedFilesystemAdapter`
 
-### 6.1 Root boundary
+### 7.1 Root boundary
 
-The adapter receives an explicitly configured root, e.g. `ARCP_SYNC_ROOT`.
+The adapter receives an explicitly configured root such as `ARCP_SYNC_ROOT`.
 
-Every normalized path must remain inside that root after resolving separators, `.`/`..`, symlinks, junctions, and platform-specific path forms.
+Every resolved path must remain inside that root after handling separators, `.`/`..`, symlinks, junctions, and platform-specific path behavior.
 
-Directory traversal outside the configured residence root is rejected.
+Traversal or resolved escapes are rejected.
 
-### 6.2 Provider blindness
+### 7.2 Provider blindness
 
-The adapter must not contain Google-, OneDrive-, Dropbox-, or Syncthing-specific logic in its core path.
+The adapter contains no Google-, OneDrive-, Dropbox-, or Syncthing-specific control path.
 
-Its job is ordinary filesystem observation and mutation.
+Its responsibility is ordinary filesystem observation and mutation.
 
-Provider-specific status integrations, if ever added, belong in optional capability/status adapters.
+Provider-specific sync-status integrations, if later desired, are separate optional capabilities and do not alter the base adapter.
 
-### 6.3 Detection model
+### 7.3 Detection model
 
 Do not rely on `fs.watch` alone.
 
-The adapter uses two complementary mechanisms:
+Use:
 
 ```text
-fast path: filesystem watcher
+fast path: filesystem watcher hint
 slow correctness path: periodic reconciliation scan
 ```
 
-Watcher events reduce latency but are treated as hints.
+Watcher events reduce latency but are non-authoritative hints.
 
-A reconciliation scan re-enumerates the scoped residence, normalizes entries, and compares hashes/metadata with the last accepted observation baseline.
+A reconciliation scan re-enumerates the scoped residence, normalizes entries, and compares them with the accepted observation baseline.
 
-This protects against:
+This covers:
 
-- coalesced or dropped filesystem notifications;
-- cloud-sync tools that perform temporary-file + rename sequences;
+- coalesced/dropped notifications;
+- temporary-file + rename patterns;
 - bulk updates;
 - process restarts;
 - offline changes arriving later;
 - network-mounted filesystem notification differences.
 
-### 6.4 Hashing strategy
+### 7.4 Hashing strategy
 
-Content hash is the strongest portable identity signal for file content, but hashing every large file on every scan is unnecessarily expensive.
-
-The implementation should support staged comparison:
+Use staged comparison:
 
 1. compare normalized path/type/size/mtime-like metadata;
-2. reuse prior content hash when metadata proves unchanged under the adapter's local rules;
-3. compute/recompute SHA-256 when a file is new, suspicious, changed, or required for a canonical transition;
-4. never treat metadata equality alone as proof of content equality in a high-integrity transition if the content hash is required.
+2. reuse a prior content hash only under explicit unchanged-metadata rules;
+3. compute/recompute SHA-256 for new, suspicious, changed, or canonical-transition-relevant files;
+4. never use metadata equality alone as high-integrity proof of content equality when a content hash is required.
 
-### 6.5 Sync completion
+### 7.5 Sync completion
 
-The generic filesystem adapter does not claim remote synchronization completion.
+The generic filesystem backend does not claim external/cloud synchronization completion.
 
-If the residence needs a stronger signal, that signal must be represented separately, for example:
+ARCP keeps local persistence and external sync state conceptually separate:
 
 ```text
 local_write_committed
@@ -262,67 +313,51 @@ external_sync_confirmed
 external_sync_failed
 ```
 
-The first Phase 2 implementation does not need to implement provider-specific sync-status detection. It only needs to avoid falsely claiming it.
+Phase 2B only guarantees `local_write_committed` plus ARCP reconciliation evidence. Provider-specific external sync confirmation is out of scope for the first implementation.
 
-### 6.6 Conflict model
+### 7.6 Conflict model
 
-If an external sync system changes a file while ARCP is also preparing a write, the adapter must surface the conflict/revision mismatch rather than silently using last-write-wins as truth.
+If an external synchronizer changes a file while ARCP prepares a write, the adapter surfaces a conflict/revision mismatch instead of silently accepting last-write-wins as truth.
 
-Where filesystem APIs cannot provide provider-grade CAS, ARCP should use pre-write observation checks plus post-write verification and record enough evidence to classify ambiguous races.
+Where filesystem APIs cannot provide provider-grade CAS, Phase 2 uses pre-write observation checks plus post-write verification and records ambiguous races as conflicts.
 
-## 7. GoogleDriveApiAdapter design
+## 8. `GoogleDriveApiAdapter`
 
-The previous Drive direction remains supported but is reframed as one implementation of `ResidenceStorageAdapter`.
+The previous Drive direction remains fully supported as `@arcp/adapter-google-drive-api`.
 
-It may provide additional capabilities beyond the minimum common contract, including:
+It may expose capabilities beyond the minimum common contract:
 
-- Drive Changes API cursor-based discovery;
+- Drive Changes API cursor discovery;
 - stable Drive file IDs;
-- Shared Drive support;
+- Shared Drives;
 - revision metadata;
 - permissions/ownership metadata;
 - Google-native document export/import handling;
 - provider-side checksums where available.
 
-Provider-specific capabilities are discoverable through `capabilities()` and must not leak into the base protocol contract.
+These are surfaced through `capabilities()` or backend-private helpers and do not leak into generic ARCP callers.
 
-### 7.1 Authentication
+### 8.1 Authentication
 
 Authentication is an activation gate for this backend only.
 
-A deployment using only `SyncedFilesystemAdapter` must not need Google OAuth configuration.
+A deployment using only `SyncedFilesystemAdapter` requires no Google OAuth configuration.
 
-A deployment enabling `GoogleDriveApiAdapter` must explicitly select and configure its authentication mode before the first live call.
+A deployment enabling `GoogleDriveApiAdapter` must select and configure its authentication mode before its first live API call.
 
-### 7.2 Changes API
+### 8.2 Changes API
 
-The existing conceptual `diffAgainst` behavior can be retained internally, but the public Phase 2 contract should no longer be named or typed around Google Drive files.
+The old `diffAgainst` idea may be reused internally, but public Phase 2 types are never `FakeDriveFile`/`DriveDiff`.
 
-Drive change tokens/cursors are backend-private optimization/state and are translated into provider-neutral diff records.
+Drive change tokens/cursors remain backend-private state translated into provider-neutral snapshots and diffs.
 
-## 8. Migration of the existing FakeDriveAdapter
+## 9. Relationship with the live Phase 1 Cloudflare runtime
 
-The current package contains `FakeDriveAdapter`, `FakeDriveFile`, and `DriveDiff` with comments stating that the real Phase 2 implementation will use the Drive Changes API.
+Phase 1 already has a live Cloudflare control plane with Worker, Durable Object, D1, and R2 infrastructure.
 
-That assumption should be removed.
+Phase 2 must not assume the Worker can directly access a user's desktop filesystem.
 
-Recommended migration:
-
-1. introduce provider-neutral test fixtures such as `InMemoryResidenceStorageAdapter` or equivalent;
-2. migrate generic contract tests from `FakeDriveAdapter` to the provider-neutral fake;
-3. keep Drive-specific fixture types only inside Google Drive adapter tests;
-4. retain the old behavior through git history and, if useful, a short migration note rather than maintaining a second long-lived Phase 2 branch;
-5. implement the Google Drive API adapter later against the same common contract.
-
-This preserves the old route without forcing the entire project to remain Google-shaped.
-
-## 9. Relationship with Phase 1 Cloudflare runtime
-
-Phase 1 now has a live Cloudflare control plane with D1/R2/Worker/Durable Object infrastructure.
-
-Phase 2 storage backends must not assume the Cloudflare Worker can directly access a user's desktop filesystem.
-
-For local synced residence mode, the architecture therefore requires a local bridge/process:
+Local synced residence therefore requires a local bridge/process:
 
 ```text
 Cloudflare Control Plane
@@ -338,13 +373,13 @@ SyncedFilesystemAdapter
 Local synced directory
 ```
 
-The local bridge is responsible for filesystem access. Cloudflare remains the control/coordination plane.
+Cloudflare remains the control/coordination plane. The local bridge owns filesystem access.
 
-For Google Drive API mode, an authorized server-side component may call the provider API directly without a desktop bridge, subject to policy and secret handling.
+For Google Drive API mode, an authorized server-side component may call Google directly without a desktop bridge, subject to policy and secret handling.
+
+Phase 2 residence storage does not replace Phase 1 D1/R2 responsibilities. D1/R2 remain control-plane metadata/object infrastructure; residence backends represent external/persistent residence storage domains.
 
 ## 10. Canonicality and authority invariants
-
-The following invariants are non-negotiable.
 
 ### 10.1 Backend state is not canonical by itself
 
@@ -352,63 +387,57 @@ The following invariants are non-negotiable.
 Observed backend object != canonical ARCP object
 ```
 
-An observed file becomes part of canonical residence state only through ARCP reconciliation/commit rules.
+An observed file enters canonical residence state only through ARCP reconciliation/commit rules.
 
 ### 10.2 External deletion is evidence, not immediate erasure
 
-A file disappearing from a synced folder or Drive listing creates a removal observation.
-
-It must not silently cascade into irreversible canonical deletion.
+A file disappearing from a synced folder or Drive listing creates a removal observation. It must not silently cascade into irreversible canonical deletion.
 
 ### 10.3 External synchronization is not ARCP replication
 
-Google Drive Desktop, OneDrive, Dropbox, Syncthing, etc. may replicate bytes, but that is not automatically equivalent to an ARCP replica with verified lineage and recovery semantics.
+Google Drive for desktop, OneDrive, Dropbox, Syncthing, etc. may replicate bytes, but byte replication is not automatically an ARCP replica with verified lineage/recovery semantics.
 
-### 10.4 Storage success is not policy success
+### 10.4 Storage capability is not authority
 
-The model/agent must not gain permission merely because the backend can technically write or delete a file.
+The model/agent gains no permission merely because a backend can technically write or delete a file. Policy evaluation stays outside storage adapters.
 
-Policy evaluation remains outside the storage adapter.
+### 10.5 Backend change does not rewrite identity
 
-### 10.5 Backend change must not rewrite identity
-
-A residence may migrate from synced filesystem to Google Drive API, or vice versa, without changing the canonical Agent identity merely because the storage transport changed.
+A residence may change storage backend without changing canonical Agent identity merely because its transport changed.
 
 ## 11. Backend selection and configuration
 
-Suggested residence configuration shape:
+Synced filesystem example:
 
 ```json
 {
   "residence_storage": {
     "backend": "synced-filesystem",
-    "root": "<local configured path>",
+    "root_env": "ARCP_SYNC_ROOT",
     "reconciliation_interval_ms": 30000
   }
 }
 ```
 
-or:
+Google Drive API example:
 
 ```json
 {
   "residence_storage": {
     "backend": "google-drive-api",
-    "drive_root_ref": "<provider-specific root reference>",
-    "credential_ref": "<secret-store reference>"
+    "drive_root_ref_env": "ARCP_DRIVE_ROOT_REF",
+    "credential_ref": "secret://arcp/google-drive"
   }
 }
 ```
 
-Sensitive credentials and machine-specific absolute paths should not be committed to the public repository.
+Machine-specific absolute paths, credentials, tokens, and provider resource IDs are never committed to the public repository.
 
-Configuration templates may contain placeholders and documented environment-variable references.
+Templates use environment-variable/secret references rather than real values.
 
-## 12. Error model
+## 12. Provider-neutral error model
 
-Backend errors should be normalized into a small provider-neutral taxonomy while preserving original diagnostic context for audit logs.
-
-Minimum classes:
+All adapters normalize failures into:
 
 - `not_found`
 - `permission_denied`
@@ -421,30 +450,28 @@ Minimum classes:
 - `authentication_required`
 - `unknown_backend_error`
 
-The generic filesystem backend normally will not emit `rate_limited` or `authentication_required`, while Google Drive API may.
-
-Callers must not need Google-specific error codes to decide ordinary ARCP control flow.
+Original provider diagnostics may be attached for audit/debugging, but ordinary ARCP control flow never requires Google-specific error codes.
 
 ## 13. Testing strategy
 
-### 13.1 Shared contract suite
+### 13.1 Reusable conformance suite
 
-Create one reusable backend conformance suite and run it against:
+One shared backend conformance suite runs against:
 
-- in-memory reference backend;
-- `SyncedFilesystemAdapter` using a temporary directory;
-- Google Drive API fake/fixture backend;
-- later live adapters behind explicit integration gates.
+- `InMemoryResidenceStorageAdapter`;
+- `SyncedFilesystemAdapter` with a temporary directory;
+- Google Drive API fake transport/fixture implementation;
+- optional live adapters behind explicit integration gates.
 
-Shared assertions should cover:
+Shared assertions cover:
 
 - deterministic snapshot normalization;
-- add/change/remove detection;
+- add/change/remove/move detection;
 - read/write/remove receipts;
 - path/ref isolation;
 - conflict behavior;
 - hash verification;
-- idempotent retry semantics where applicable;
+- idempotent retries where applicable;
 - no silent canonicality assumptions.
 
 ### 13.2 Filesystem-specific tests
@@ -452,12 +479,12 @@ Shared assertions should cover:
 Include:
 
 - traversal rejection;
-- symlink/junction escape handling;
+- symlink/junction escape rejection;
 - atomic-replace/rename patterns;
-- dropped/coalesced watcher simulation followed by reconciliation recovery;
+- dropped/coalesced watcher hints healed by reconciliation;
 - concurrent external modification detection;
-- restart and baseline reconstruction;
-- large-file staged hashing behavior.
+- restart/baseline reconstruction;
+- staged hashing behavior for large files.
 
 ### 13.3 Drive-specific tests
 
@@ -465,71 +492,79 @@ Include:
 
 - pagination/change cursor progression;
 - expired/invalid cursor recovery;
-- OAuth/auth-required behavior;
-- rate limiting/retry signaling;
-- Shared Drive identity/reference translation;
-- Drive-native object capability differences;
+- authentication-required behavior;
+- rate-limit/retry signaling;
+- Shared Drive reference translation;
+- Google-native capability differences;
 - no provider-specific metadata leakage into generic callers.
 
 ## 14. Delivery sequence
 
 ### Phase 2A — provider-neutral contract
 
-- create common storage types and interface;
-- create in-memory reference adapter;
-- create shared conformance tests;
-- migrate generic tests away from Google-shaped fake types.
+Implement in this order:
+
+1. `packages/residence-storage` package and fixed public types/interface;
+2. `InMemoryResidenceStorageAdapter`;
+3. reusable conformance tests;
+4. migrate generic uses/tests away from `FakeDriveAdapter`;
+5. keep Drive-specific fixtures isolated for the later Google adapter.
 
 ### Phase 2B — synced filesystem backend
 
-- implement root-scoped filesystem adapter;
-- implement snapshot + diff + read/write/remove;
-- implement watcher hints plus reconciliation;
-- implement integrity/hash verification;
-- add local bridge integration boundary.
+1. create `packages/adapters/synced-filesystem`;
+2. root confinement;
+3. snapshot/diff/read/write/remove;
+4. staged hashing;
+5. watcher hints + reconciliation;
+6. conflict/precondition/post-write verification;
+7. local bridge integration contract.
 
 ### Phase 2C — Google Drive API optional backend
 
-- preserve/reuse Drive-specific conceptual work;
-- implement provider API translation behind the common contract;
-- only then activate OAuth/live integration gate;
-- add live tests separately from default local test suite.
+1. create `packages/adapters/google-drive-api`;
+2. migrate useful Drive-specific fixture concepts from the old adapter;
+3. implement API translation behind `ResidenceStorageAdapter`;
+4. keep live authentication disabled by default;
+5. activate OAuth/service-account gate only for live integration testing;
+6. remove the old `packages/adapters/drive` package after import migration and full-test verification.
 
-This order allows ARCP to become useful immediately on machines with existing synchronized folders without removing the future headless/cloud-only option.
+This ordering makes the local synced-folder route usable without abandoning headless/cloud-only deployments.
 
 ## 15. Non-goals for the first implementation
 
-The first Phase 2 implementation does not need to:
+Phase 2 does not attempt to:
 
-- prove that Google Drive Desktop has finished uploading a local write;
-- support every synchronization provider's proprietary status API;
+- prove that Google Drive for desktop finished uploading a local write;
+- support every sync provider's proprietary status API;
 - expose Google Docs editing semantics through the generic filesystem backend;
-- merge ARCP D1/R2 storage and residence storage into one abstraction;
+- merge Phase 1 D1/R2 storage and residence storage into one abstraction;
 - make Cloudflare Workers read local filesystem paths directly;
 - implement automatic cross-backend migration in the same PR;
 - treat arbitrary synchronized folders as trusted canonical state without reconciliation.
 
 ## 16. Success criteria
 
-Phase 2 is considered structurally successful when:
+Phase 2 is structurally successful when:
 
 1. ARCP core has no Google Drive-specific type dependency for residence storage.
-2. A residence can choose `synced-filesystem` or `google-drive-api` without changing core control logic.
+2. A residence can select `synced-filesystem` or `google-drive-api` without changing core control logic.
 3. The synced filesystem route requires no Google OAuth.
-4. The Google Drive API route remains supported as an optional first-class backend rather than abandoned legacy code.
-5. Shared contract tests prove both backends conform to the same provider-neutral semantics.
-6. Filesystem watcher loss can be healed by reconciliation.
+4. Google Drive API remains an optional first-class backend rather than abandoned legacy code.
+5. Shared conformance tests prove common semantics across the reference backend and real adapters.
+6. Filesystem watcher loss is healed by reconciliation.
 7. External storage changes cannot silently bypass ARCP policy/canonical commit semantics.
 8. Backend selection does not redefine Agent identity or lineage.
-9. Cloudflare remains a control plane; local filesystem access is isolated to the local bridge/runtime.
-10. Future backends such as OneDrive API, S3/WebDAV, NAS, or another sync provider can be added without redesigning ARCP core.
+9. Cloudflare remains control plane; local filesystem access remains isolated to local runtime/bridge.
+10. A future OneDrive API, S3/WebDAV, NAS-specific, or other backend can be added without redesigning ARCP core.
+11. `packages/adapters/drive` is retired only after its generic and Google-specific responsibilities have migrated and all tests remain green.
 
 ## 17. Final design statement
 
-Phase 2 should no longer mean "Google Drive integration".
+Phase 2 no longer means "Google Drive integration".
 
-It should mean:
+It means:
 
-> **ARCP Pluggable Residence Storage: one residence protocol, multiple storage/synchronization backends.**
+> **ARCP Pluggable Residence Storage: one residence protocol, multiple storage and synchronization backends.**
 
 The local synchronized filesystem is the recommended local-first path. Google Drive API remains a full optional cloud-native path. Neither backend owns ARCP canonical truth; both provide observations and storage capabilities to the same residence continuity system.
