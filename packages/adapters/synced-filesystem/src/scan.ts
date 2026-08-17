@@ -21,10 +21,6 @@ export function filesystemRef(relativePath: string): string {
   return `fs:${encodeURIComponent(relativePath)}`;
 }
 
-export function filesystemRevision(stats: Stats): string {
-  return `fs:${stats.mtimeMs}:${stats.size}`;
-}
-
 function directoryEntry(relativePath: string, stats: Stats): ResidenceStorageEntry {
   return {
     ref: filesystemRef(relativePath),
@@ -33,7 +29,7 @@ function directoryEntry(relativePath: string, stats: Stats): ResidenceStorageEnt
     size: null,
     modifiedAt: stats.mtime.toISOString(),
     contentHash: null,
-    revision: filesystemRevision(stats),
+    revision: null,
   };
 }
 
@@ -50,7 +46,7 @@ async function fileEntry(
     size: stats.size,
     modifiedAt: stats.mtime.toISOString(),
     contentHash: await sha256Bytes(bytes),
-    revision: filesystemRevision(stats),
+    revision: null,
   };
 }
 
