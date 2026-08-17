@@ -1,0 +1,52 @@
+{
+  // Deployment configuration TEMPLATE (Task 5B). No real Cloudflare account,
+  // D1 database, or R2 bucket has been provisioned yet — every REPLACE_ME
+  // below is a placeholder. Per the Phase 1 plan's Gate A, provisioning and
+  // `wrangler login` only happen at the first actual remote deploy, not now.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "arcp-mvp-control-plane",
+
+  // TODO before first deploy: set to the actual deploy date. See
+  // https://developers.cloudflare.com/workers/configuration/compatibility-dates/
+  "compatibility_date": "REPLACE_ME_WITH_DEPLOY_DATE",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "main": "./src/worker.ts",
+
+  // Declarative exports lifecycle: worker.ts exports both the public
+  // `fetch` handler (default export) and the ArcpAgentDurableObject class
+  // that this binding set points at.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "ArcpAgentDurableObject",
+      },
+    ],
+  },
+
+  // SQLite-backed Durable Object namespace (new_sqlite_classes, not the
+  // legacy new_classes) — Cloudflare's current recommended DO storage class.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ArcpAgentDurableObject"],
+    },
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "arcp-mvp-metadata",
+      "database_id": "REPLACE_ME_AFTER_PROVISIONING",
+      "migrations_dir": "../../../migrations/d1",
+    },
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "OBJECTS",
+      "bucket_name": "REPLACE_ME_AFTER_PROVISIONING",
+    },
+  ],
+}

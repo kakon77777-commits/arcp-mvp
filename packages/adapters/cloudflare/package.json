@@ -10,5 +10,10 @@
       "import": "./src/index.ts",
       "default": "./src/index.ts"
     }
+  },
+  "dependencies": {
+    "@arcp/schema": "workspace:*",
+    "@arcp/policy-engine": "workspace:*",
+    "@arcp/control-plane-core": "workspace:*"
   }
 }

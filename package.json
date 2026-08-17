@@ -20,6 +20,7 @@
     "@arcp/policy-engine": "workspace:*",
     "@arcp/coordinator": "workspace:*",
     "@arcp/control-plane-core": "workspace:*",
+    "@arcp/adapter-cloudflare": "workspace:*",
     "@arcp/adapter-ctcl": "workspace:*",
     "@arcp/adapter-drive": "workspace:*",
     "@arcp/adapter-model": "workspace:*",
