@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -158,5 +158,146 @@ describe('SyncedFilesystemAdapter observation path', () => {
 
     const adapter = new SyncedFilesystemAdapter({ root });
     await expect(adapter.snapshot()).rejects.toMatchObject({ code: 'invalid_path_or_ref' });
+  });
+});
+
+describe('SyncedFilesystemAdapter mutation path', () => {
+  it('creates missing parent directories and atomically publishes a verified file', async () => {
+    const root = await makeRoot();
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    const receipt = await adapter.write(
+      { path: 'nested/deeper/paper.md' },
+      new TextEncoder().encode('draft'),
+    );
+
+    expect(receipt).toMatchObject({
+      status: 'written',
+      ref: 'fs:nested%2Fdeeper%2Fpaper.md',
+      path: 'nested/deeper/paper.md',
+      contentHash: digest('draft'),
+      providerReplication: 'unknown',
+    });
+    expect(await readFile(join(root, 'nested', 'deeper', 'paper.md'), 'utf8')).toBe('draft');
+    expect((await readdir(join(root, 'nested', 'deeper'))).filter((name) => name.includes('.arcp-tmp-'))).toEqual([]);
+  });
+
+  it('returns unchanged only after verifying identical existing bytes', async () => {
+    const root = await makeRoot();
+    await writeFile(join(root, 'paper.md'), 'same');
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    const receipt = await adapter.write({ path: 'paper.md' }, new TextEncoder().encode('same'));
+
+    expect(receipt).toMatchObject({
+      status: 'unchanged',
+      contentHash: digest('same'),
+      providerReplication: 'unknown',
+    });
+  });
+
+  it('enforces ifAbsent before mutation', async () => {
+    const root = await makeRoot();
+    await writeFile(join(root, 'paper.md'), 'existing');
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    await expect(
+      adapter.write({ path: 'paper.md' }, new TextEncoder().encode('replacement'), { ifAbsent: true }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(await readFile(join(root, 'paper.md'), 'utf8')).toBe('existing');
+  });
+
+  it('detects an external content change through ifContentHash before writing', async () => {
+    const root = await makeRoot();
+    await writeFile(join(root, 'paper.md'), 'before');
+    const adapter = new SyncedFilesystemAdapter({ root });
+    const baseline = await adapter.read('fs:paper.md');
+    await writeFile(join(root, 'paper.md'), 'external-change');
+
+    await expect(
+      adapter.write(
+        { path: 'paper.md' },
+        new TextEncoder().encode('ours'),
+        { ifContentHash: baseline!.contentHash },
+      ),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(await readFile(join(root, 'paper.md'), 'utf8')).toBe('external-change');
+  });
+
+  it('removes only with matching preconditions and makes repeated removal idempotent', async () => {
+    const root = await makeRoot();
+    await writeFile(join(root, 'paper.md'), 'draft');
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    await expect(
+      adapter.remove({ path: 'paper.md' }, { ifContentHash: digest('wrong') }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+
+    const removed = await adapter.remove({ path: 'paper.md' }, { ifContentHash: digest('draft') });
+    expect(removed).toMatchObject({
+      status: 'removed',
+      ref: 'fs:paper.md',
+      path: 'paper.md',
+      providerReplication: 'unknown',
+    });
+
+    const removedAgain = await adapter.remove({ path: 'paper.md' });
+    expect(removedAgain).toEqual({
+      status: 'already_absent',
+      ref: null,
+      path: 'paper.md',
+      providerReplication: 'unknown',
+    });
+  });
+
+  it('never claims provider replication confirmation for local writes or removals', async () => {
+    const root = await makeRoot();
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    const written = await adapter.write({ path: 'paper.md' }, new TextEncoder().encode('draft'));
+    const removed = await adapter.remove({ path: 'paper.md' });
+
+    expect(written.providerReplication).toBe('unknown');
+    expect(removed.providerReplication).toBe('unknown');
+  });
+
+  it('rejects revision preconditions because filesystem revisions are not a supported concurrency contract', async () => {
+    const root = await makeRoot();
+    await writeFile(join(root, 'paper.md'), 'draft');
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    await expect(
+      adapter.write({ path: 'paper.md' }, new TextEncoder().encode('next'), { ifRevision: '1' }),
+    ).rejects.toMatchObject({ code: 'unsupported_operation' });
+    await expect(
+      adapter.remove({ path: 'paper.md' }, { ifRevision: '1' }),
+    ).rejects.toMatchObject({ code: 'unsupported_operation' });
+  });
+
+  it('does not perform recursive directory removal', async () => {
+    const root = await makeRoot();
+    await mkdir(join(root, 'notes'));
+    await writeFile(join(root, 'notes', 'a.txt'), 'hello');
+    const adapter = new SyncedFilesystemAdapter({ root });
+
+    await expect(adapter.remove({ path: 'notes' })).rejects.toMatchObject({
+      code: 'unsupported_operation',
+    });
+    expect(await readFile(join(root, 'notes', 'a.txt'), 'utf8')).toBe('hello');
+  });
+
+  it('raises integrity_mismatch when the final file changes before post-write verification', async () => {
+    const root = await makeRoot();
+    const adapter = new SyncedFilesystemAdapter({
+      root,
+      afterWriteBeforeVerify: async (absolutePath) => {
+        await writeFile(absolutePath, 'tampered');
+      },
+    });
+
+    await expect(
+      adapter.write({ path: 'paper.md' }, new TextEncoder().encode('intended')),
+    ).rejects.toMatchObject({ code: 'integrity_mismatch' });
+    expect(await readFile(join(root, 'paper.md'), 'utf8')).toBe('tampered');
   });
 });
