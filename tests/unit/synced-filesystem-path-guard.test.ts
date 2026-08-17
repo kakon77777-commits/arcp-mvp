@@ -52,6 +52,7 @@ describe('synced filesystem path guard', () => {
   it('accepts canonical POSIX-style relative paths', () => {
     expect(() => assertResidenceRelativePath('notes/a.txt')).not.toThrow();
     expect(() => assertResidenceRelativePath('paper.md')).not.toThrow();
+    expect(() => assertResidenceRelativePath('..notes/a.txt')).not.toThrow();
   });
 
   it('resolves an existing entry under the real root', async () => {
@@ -61,6 +62,16 @@ describe('synced filesystem path guard', () => {
 
     await expect(resolveResidencePath(rootRealPath, 'notes/a.txt')).resolves.toBe(
       join(rootRealPath, 'notes', 'a.txt'),
+    );
+  });
+
+  it('does not confuse a legal segment beginning with two dots with parent traversal', async () => {
+    const { root, rootRealPath } = await makeSandbox();
+    await mkdir(join(root, '..notes'));
+    await writeFile(join(root, '..notes', 'a.txt'), 'hello');
+
+    await expect(resolveResidencePath(rootRealPath, '..notes/a.txt')).resolves.toBe(
+      join(rootRealPath, '..notes', 'a.txt'),
     );
   });
 
