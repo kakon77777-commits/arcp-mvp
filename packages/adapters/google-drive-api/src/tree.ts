@@ -38,8 +38,8 @@ export function googleDriveRef(fileId: string): string {
 }
 
 export function googleDriveRevision(record: GoogleDriveFileRecord): string | null {
-  if (record.headRevisionId !== null) return `gdrive-head:${record.headRevisionId}`;
-  if (record.version !== null) return `gdrive-version:${record.version}`;
+  if (record.headRevisionId != null) return `gdrive-head:${record.headRevisionId}`;
+  if (record.version != null) return `gdrive-version:${record.version}`;
   return null;
 }
 
