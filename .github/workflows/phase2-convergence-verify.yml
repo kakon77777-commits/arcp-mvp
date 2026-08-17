@@ -27,10 +27,9 @@ jobs:
         run: pnpm install --no-frozen-lockfile
       - name: Verify legacy Drive fake is absent from code and config
         run: |
-          if git grep -n -E 'FakeDriveAdapter|FakeDriveFile|@arcp/adapter-drive|the real adapter \(Phase 2\) implements' -- . \
-            ':(exclude)docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md' \
-            ':(exclude)docs/superpowers/plans/2026-08-17-phase2-residence-storage-implementation.md'; then
-            echo 'legacy Drive references remain outside archived design/plan docs'
+          if git grep -n -E 'FakeDriveAdapter|FakeDriveFile|@arcp/adapter-drive|the real adapter \(Phase 2\) implements' -- \
+            package.json pnpm-lock.yaml packages tests docs/examples; then
+            echo 'legacy Drive references remain in code or config'
             exit 1
           fi
       - name: Full tests
