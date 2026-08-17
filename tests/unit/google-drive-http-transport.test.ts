@@ -22,6 +22,8 @@ function fileRecord(overrides: Partial<GoogleDriveFileRecord> = {}): GoogleDrive
     size: '5',
     md5Checksum: 'md5-value',
     sha256Checksum: 'sha256-value',
+    headRevisionId: null,
+    version: null,
     trashed: false,
     ...overrides,
   };
