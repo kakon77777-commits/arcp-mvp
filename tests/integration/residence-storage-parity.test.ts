@@ -1,4 +1,8 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { SyncedFilesystemAdapter } from '@arcp/adapter-synced-filesystem';
 import {
   InMemoryResidenceStorageAdapter,
   diffResidenceSnapshots,
@@ -33,6 +37,32 @@ function snapshot(entries: ResidenceStorageEntry[]): ResidenceStorageSnapshot {
 describe('residence storage reference semantics', () => {
   it('satisfies the shared adapter conformance contract', async () => {
     await runResidenceStorageConformance(async () => new InMemoryResidenceStorageAdapter());
+  });
+
+  it('exposes synced filesystem snapshot/read observations through the provider-neutral shapes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arcp-residence-parity-'));
+    try {
+      await mkdir(join(root, 'notes'));
+      await writeFile(join(root, 'notes', 'bridge.txt'), 'bridge-evidence');
+
+      const adapter = new SyncedFilesystemAdapter({
+        root,
+        now: () => new Date('2026-08-17T09:45:00.000Z'),
+      });
+      const observed = await adapter.snapshot();
+      const file = observed.entries.find((item) => item.path === 'notes/bridge.txt');
+
+      expect(observed.backendKind).toBe('synced-filesystem');
+      expect(observed.observedAt).toBe('2026-08-17T09:45:00.000Z');
+      expect(file).toMatchObject({ kind: 'file', ref: 'fs:notes%2Fbridge.txt' });
+
+      const blob = await adapter.read(file!.ref);
+      expect(blob?.path).toBe('notes/bridge.txt');
+      expect(new TextDecoder().decode(blob?.bytes)).toBe('bridge-evidence');
+      expect(blob?.contentHash).toBe(file?.contentHash);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('reports backend removal as evidence without performing any canonical action', async () => {
