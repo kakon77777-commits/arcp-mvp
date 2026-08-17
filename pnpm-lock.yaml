@@ -17,6 +17,9 @@ importers:
       '@arcp/adapter-drive':
         specifier: workspace:*
         version: link:packages/adapters/drive
+      '@arcp/adapter-google-drive-api':
+        specifier: workspace:*
+        version: link:packages/adapters/google-drive-api
       '@arcp/adapter-model':
         specifier: workspace:*
         version: link:packages/adapters/model
@@ -73,6 +76,12 @@ importers:
         version: link:../../arcp-schema
 
   packages/adapters/drive: {}
+
+  packages/adapters/google-drive-api:
+    dependencies:
+      '@arcp/residence-storage':
+        specifier: workspace:*
+        version: link:../../residence-storage
 
   packages/adapters/model:
     dependencies:
