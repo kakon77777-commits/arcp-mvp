@@ -1,6 +1,6 @@
 # Phase 3 Temporal Provenance & Shared-Instant Integration — Design
 
-**Status:** Approved concept from 2026-08-17 Phase 3 discussion; written design checkpoint pending final review.
+**Status:** Approved 2026-08-17
 
 ## Goal
 
