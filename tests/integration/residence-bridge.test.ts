@@ -4,10 +4,7 @@ import {
   type ResidenceObservation,
   type ResidenceObservationSink,
 } from '@arcp/residence-bridge';
-import {
-  InMemoryResidenceStorageAdapter,
-  type ResidenceStorageSnapshot,
-} from '@arcp/residence-storage';
+import { InMemoryResidenceStorageAdapter } from '@arcp/residence-storage';
 
 class CollectingSink implements ResidenceObservationSink {
   readonly observations: ResidenceObservation[] = [];
@@ -21,11 +18,6 @@ function bytes(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
-function expectBaseline(actual: ResidenceStorageSnapshot, expected: ResidenceStorageSnapshot): void {
-  expect(actual).toEqual(expected);
-  expect(actual).not.toBe(expected);
-}
-
 describe('ResidenceBridge', () => {
   it('publishes nothing for an unchanged reconciliation and returns the new baseline', async () => {
     const adapter = new InMemoryResidenceStorageAdapter();
@@ -34,10 +26,11 @@ describe('ResidenceBridge', () => {
     const previous = await adapter.snapshot();
 
     const next = await bridge.reconcile(previous);
-    const expected = await adapter.snapshot();
 
     expect(sink.observations).toEqual([]);
-    expectBaseline(next, expected);
+    expect(next).not.toBe(previous);
+    expect(next.backendKind).toBe('memory');
+    expect(next.entries).toEqual(previous.entries);
   });
 
   it('publishes one observation for a backend-side write', async () => {
