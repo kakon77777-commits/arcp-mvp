@@ -1,3 +1,4 @@
+import type { webcrypto } from 'node:crypto';
 import {
   TemporalEvidenceError,
   type TemporalEvidence,
@@ -25,20 +26,20 @@ function decodeBase64(value: string): Uint8Array {
   }
 }
 
-export function parseCtclPublicJwk(data: unknown): JsonWebKey {
+export function parseCtclPublicJwk(data: unknown): webcrypto.JsonWebKey {
   const object = asCtclObject(data, 'public-key response');
   const alg = ctclRequiredString(object.alg, 'pubkey.alg');
   ctclRequiredString(object.key_id, 'pubkey.key_id');
   if (alg !== EXPECTED_ALG) {
     throw attestationError(`unsupported CTCL attestation algorithm: ${alg}`);
   }
-  const jwk = asCtclObject(object.public_jwk, 'public_jwk') as JsonWebKey;
+  const jwk = asCtclObject(object.public_jwk, 'public_jwk') as webcrypto.JsonWebKey;
   return { ...jwk };
 }
 
 export async function verifyTemporalEvidenceAttestation(
   evidence: TemporalEvidence,
-  publicJwk: JsonWebKey,
+  publicJwk: webcrypto.JsonWebKey,
 ): Promise<TemporalEvidence> {
   const attestation = evidence.attestation;
   const compact = evidence.instant.attestation;
@@ -65,7 +66,7 @@ export async function verifyTemporalEvidenceAttestation(
     throw attestationError('CTCL attestation requires canonical unix_ns evidence');
   }
 
-  let publicKey: CryptoKey;
+  let publicKey: webcrypto.CryptoKey;
   try {
     publicKey = await crypto.subtle.importKey(
       'jwk',
