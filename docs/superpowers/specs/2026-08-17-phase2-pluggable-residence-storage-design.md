@@ -311,6 +311,16 @@ Drive change tokens/cursors are backend-private optimization/state and are trans
 
 The implementation uses Drive API v3 start-page-token and change-list semantics behind its transport boundary and keeps those token types out of ARCP core.
 
+### 7.3 Revision mapping
+
+Drive's provider-neutral `revision` field is mapped deterministically from Drive metadata:
+
+1. if `headRevisionId` is present, use `gdrive-head:${headRevisionId}`;
+2. otherwise, if `version` is present, use `gdrive-version:${version}`;
+3. otherwise use `null`.
+
+`modifiedTime` is observation metadata only and must not be promoted to a revision token.
+
 ## 8. Migration of the existing FakeDriveAdapter
 
 The current package contains `FakeDriveAdapter`, `FakeDriveFile`, and `DriveDiff` with comments stating that the real Phase 2 implementation will use the Drive Changes API.
