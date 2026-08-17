@@ -20,6 +20,9 @@ importers:
       '@arcp/adapter-model':
         specifier: workspace:*
         version: link:packages/adapters/model
+      '@arcp/adapter-synced-filesystem':
+        specifier: workspace:*
+        version: link:packages/adapters/synced-filesystem
       '@arcp/control-plane-core':
         specifier: workspace:*
         version: link:packages/control-plane-core
@@ -73,6 +76,12 @@ importers:
       '@arcp/schema':
         specifier: workspace:*
         version: link:../../arcp-schema
+
+  packages/adapters/synced-filesystem:
+    dependencies:
+      '@arcp/residence-storage':
+        specifier: workspace:*
+        version: link:../../residence-storage
 
   packages/arcp-schema: {}
 
