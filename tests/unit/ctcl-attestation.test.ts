@@ -1,17 +1,18 @@
+import type { webcrypto } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { CtclRestTemporalAdapter } from '@arcp/adapter-ctcl';
-import { TemporalEvidenceError, type TemporalEvidence } from '@arcp/temporal-evidence';
+import type { TemporalEvidence } from '@arcp/temporal-evidence';
 import { createFakeCtclFetch } from '../helpers/fake-ctcl-fetch.js';
 
 async function makeSignedEvidence(): Promise<{
   evidence: TemporalEvidence;
-  publicJwk: JsonWebKey;
+  publicJwk: webcrypto.JsonWebKey;
 }> {
   const keyPair = (await crypto.subtle.generateKey(
     { name: 'Ed25519' },
     true,
     ['sign', 'verify'],
-  )) as CryptoKeyPair;
+  )) as webcrypto.CryptoKeyPair;
   const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
 
   const evidence: TemporalEvidence = {
@@ -63,7 +64,7 @@ async function makeSignedEvidence(): Promise<{
 }
 
 function expectAttestationInvalid(promise: Promise<unknown>) {
-  return expect(promise).rejects.toMatchObject<Partial<TemporalEvidenceError>>({
+  return expect(promise).rejects.toMatchObject({
     code: 'attestation_invalid',
     retryable: false,
   });
