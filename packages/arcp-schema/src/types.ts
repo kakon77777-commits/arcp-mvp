@@ -91,6 +91,8 @@ export interface WakeRecord {
   budget_ref?: string;
   not_before?: string;
   expires_at?: string;
+  not_before_instant?: InstantRef;
+  expires_at_instant?: InstantRef;
   revalidate_on_wake: boolean;
   idempotency_key: string;
 }
@@ -151,5 +153,6 @@ export interface ResidenceManifest {
   root_hash: string;
   policy_version: number;
   lease_fencing_token: number;
+  commit_instant?: InstantRef;
   status: 'active' | 'suspended';
 }
