@@ -63,7 +63,11 @@ importers:
         specifier: workspace:*
         version: link:../../arcp-schema
 
-  packages/adapters/drive: {}
+  packages/adapters/drive:
+    dependencies:
+      '@arcp/schema':
+        specifier: workspace:*
+        version: link:../../arcp-schema
 
   packages/adapters/model:
     dependencies:

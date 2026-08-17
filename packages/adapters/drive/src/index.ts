@@ -1,3 +1,11 @@
+export * from './glob.js';
+export * from './google-drive-types.js';
+export * from './sensitivity-rules.js';
+export * from './canonical-classifier.js';
+export * from './change-discovery.js';
+export * from './sync-engine.js';
+export * from './deletion-observation.js';
+
 /**
  * Fake Google Drive Residence Adapter for Phase 0 (§9). This is a fixture-
  * backed stand-in for change discovery and canonical/derived mapping — no
