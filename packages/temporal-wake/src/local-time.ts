@@ -80,7 +80,9 @@ function formatterFor(timezone: string): Intl.DateTimeFormat {
 }
 
 function formattedFields(formatter: Intl.DateTimeFormat, unixMs: number): ParsedLocalDateTime {
-  const values = new Map(formatter.formatToParts(new Date(unixMs)).map((part) => [part.type, part.value]));
+  const values = new Map<string, string>(
+    formatter.formatToParts(new Date(unixMs)).map((part): [string, string] => [part.type, part.value]),
+  );
   const required = (name: string): number => {
     const value = values.get(name);
     if (value === undefined) throw invalidInput(`timezone formatter omitted ${name}`);
