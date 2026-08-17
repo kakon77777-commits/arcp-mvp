@@ -25,6 +25,7 @@
     "@arcp/adapter-ctcl": "workspace:*",
     "@arcp/adapter-drive": "workspace:*",
     "@arcp/adapter-model": "workspace:*",
+    "@arcp/adapter-synced-filesystem": "workspace:*",
     "@types/node": "^24",
     "tsx": "^4",
     "typescript": "^5",
