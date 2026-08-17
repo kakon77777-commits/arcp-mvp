@@ -1,3 +1,4 @@
+import type { webcrypto } from 'node:crypto';
 import {
   TemporalEvidenceError,
   type RegisterInstantInput,
@@ -86,11 +87,14 @@ export class CtclRestTemporalAdapter implements TemporalEvidencePort {
     );
   }
 
-  async getPublicKey(): Promise<JsonWebKey> {
+  async getPublicKey(): Promise<webcrypto.JsonWebKey> {
     return parseCtclPublicJwk(await this.http.get('/v1/pubkey'));
   }
 
-  async verifyEvidence(evidence: TemporalEvidence, publicJwk?: JsonWebKey): Promise<TemporalEvidence> {
+  async verifyEvidence(
+    evidence: TemporalEvidence,
+    publicJwk?: webcrypto.JsonWebKey,
+  ): Promise<TemporalEvidence> {
     const jwk = publicJwk ?? (await this.getPublicKey());
     return verifyTemporalEvidenceAttestation(evidence, jwk);
   }
