@@ -104,11 +104,14 @@ describe('ResidenceReconciler', () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(adapter.diffCalls).toBe(1);
-    expect(observed).toHaveLength(1);
-    expect(observed[0]!.diff.added.map((entry) => entry.path)).toEqual(['hinted.txt']);
 
+    // diffCalls increments before the in-memory adapter finishes its async
+    // WebCrypto hashing. Abort and await start() to join the in-flight scan
+    // before asserting callback delivery.
     controller.abort();
     await running;
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.diff.added.map((entry) => entry.path)).toEqual(['hinted.txt']);
   });
 
   it('collapses multiple hints in one debounce window into one scan', async () => {
@@ -171,11 +174,11 @@ describe('ResidenceReconciler', () => {
     await adapter.applyExternalWrite('periodic.txt', bytes('periodic'));
     await vi.advanceTimersByTimeAsync(100);
     expect(adapter.diffCalls).toBe(2);
-    expect(observed).toHaveLength(1);
-    expect(observed[0]!.diff.added.map((entry) => entry.path)).toEqual(['periodic.txt']);
 
     controller.abort();
     await running;
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.diff.added.map((entry) => entry.path)).toEqual(['periodic.txt']);
   });
 
   it('stops future periodic and debounced scans after abort', async () => {
