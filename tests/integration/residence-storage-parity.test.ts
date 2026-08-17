@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { GoogleDriveApiAdapter } from '@arcp/adapter-google-drive-api';
 import { SyncedFilesystemAdapter } from '@arcp/adapter-synced-filesystem';
 import {
   InMemoryResidenceStorageAdapter,
@@ -10,6 +11,11 @@ import {
   type ResidenceStorageEntry,
   type ResidenceStorageSnapshot,
 } from '@arcp/residence-storage';
+import {
+  GOOGLE_DRIVE_FOLDER_MIME,
+  InMemoryGoogleDriveTransport,
+  fakeGoogleDriveRecord,
+} from '../helpers/fake-google-drive-transport.js';
 import { runResidenceStorageConformance } from '../helpers/residence-storage-conformance.js';
 
 function entry(overrides: Partial<ResidenceStorageEntry> = {}): ResidenceStorageEntry {
@@ -46,6 +52,24 @@ describe('residence storage reference semantics', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('satisfies the shared adapter conformance contract with fixture-backed Google Drive API mutations', async () => {
+    await runResidenceStorageConformance(async () => {
+      const transport = new InMemoryGoogleDriveTransport('root-id', [
+        {
+          record: fakeGoogleDriveRecord({
+            id: 'notes-folder',
+            name: 'notes',
+            mimeType: GOOGLE_DRIVE_FOLDER_MIME,
+            parents: ['root-id'],
+            size: null,
+            version: '1',
+          }),
+        },
+      ]);
+      return new GoogleDriveApiAdapter({ transport, rootId: 'root-id' });
+    });
   });
 
   it('exposes synced filesystem snapshot/read observations through the provider-neutral shapes', async () => {
