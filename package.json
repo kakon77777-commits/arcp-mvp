@@ -21,6 +21,7 @@
     "@arcp/coordinator": "workspace:*",
     "@arcp/control-plane-core": "workspace:*",
     "@arcp/residence-storage": "workspace:*",
+    "@arcp/residence-bridge": "workspace:*",
     "@arcp/adapter-cloudflare": "workspace:*",
     "@arcp/adapter-ctcl": "workspace:*",
     "@arcp/adapter-drive": "workspace:*",
