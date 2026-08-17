@@ -11,8 +11,8 @@ export interface GoogleDriveFileRecord {
   size: string | null;
   md5Checksum: string | null;
   sha256Checksum: string | null;
-  headRevisionId: string | null;
-  version: string | null;
+  headRevisionId?: string | null;
+  version?: string | null;
   trashed: boolean;
 }
 
