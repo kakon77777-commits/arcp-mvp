@@ -18,6 +18,8 @@ const FILE_FIELDS = [
   'size',
   'md5Checksum',
   'sha256Checksum',
+  'headRevisionId',
+  'version',
   'trashed',
 ].join(',');
 const FILE_LIST_FIELDS = `nextPageToken,files(${FILE_FIELDS})`;
@@ -98,6 +100,8 @@ function parseFileRecord(value: unknown): GoogleDriveFileRecord {
     size: nullableString(record.size, 'size'),
     md5Checksum: nullableString(record.md5Checksum, 'md5Checksum'),
     sha256Checksum: nullableString(record.sha256Checksum, 'sha256Checksum'),
+    headRevisionId: nullableString(record.headRevisionId, 'headRevisionId'),
+    version: nullableString(record.version, 'version'),
     trashed: record.trashed ?? false,
   };
 }
