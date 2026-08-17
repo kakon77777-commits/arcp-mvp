@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { TemporalEvidenceError } from '@arcp/temporal-evidence';
 import type {
   RegisterInstantInput,
   SharedInstantPlan,
@@ -98,7 +97,7 @@ class RecordingTemporalPort implements TemporalEvidencePort {
 }
 
 async function expectInvalidInput(promise: Promise<unknown>): Promise<void> {
-  await expect(promise).rejects.toMatchObject<Partial<TemporalEvidenceError>>({
+  await expect(promise).rejects.toMatchObject({
     code: 'invalid_input',
     retryable: false,
   });
