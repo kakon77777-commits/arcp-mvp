@@ -1,5 +1,5 @@
 import { lstat, realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { ResidenceStorageError } from '@arcp/residence-storage';
 
 function invalidPath(message: string, cause?: unknown): ResidenceStorageError {
@@ -13,7 +13,7 @@ function invalidPath(message: string, cause?: unknown): ResidenceStorageError {
 
 function isContained(rootRealPath: string, absolutePath: string): boolean {
   const rel = relative(rootRealPath, absolutePath);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function assertContained(rootRealPath: string, absolutePath: string): void {
