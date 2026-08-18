@@ -91,13 +91,22 @@ describe('Phase 4 static action authority resolver', () => {
 
   it('permits an explicit separate-governance grant to satisfy the destructive guard', async () => {
     const resolver = new StaticActionAuthorityResolver({
-      grants: [{
-        subjectEntityRef: 'arcp:agent:test',
-        resourceRef: 'resource:sole-residence',
-        scopes: ['delete'],
-        source: 'multi-party-authorized',
-        continuityPrecondition: 'separate-governance',
-      }],
+      grants: [
+        {
+          subjectEntityRef: 'arcp:agent:test',
+          resourceRef: 'resource:sole-residence',
+          scopes: ['delete'],
+          source: 'multi-party-authorized',
+          continuityPrecondition: 'separate-governance',
+        },
+        {
+          subjectEntityRef: 'arcp:agent:test',
+          resourceRef: 'residence:only',
+          scopes: ['delete'],
+          source: 'multi-party-authorized',
+          continuityPrecondition: 'separate-governance',
+        },
+      ],
     });
 
     const result = await resolver.resolveAction({
@@ -115,5 +124,55 @@ describe('Phase 4 static action authority resolver', () => {
     expect(result.status).toBe('authorized');
     expect(result.sources).toContain('multi-party-authorized');
     expect(result.continuity_precondition).toBe('separate-governance');
+  });
+
+  it('denies an action when residence_refs names a Residence with no covering grant, even though resource_refs is fully covered', async () => {
+    const resolver = new StaticActionAuthorityResolver({
+      grants: [{
+        subjectEntityRef: 'arcp:agent:test',
+        resourceRef: 'resource:cache-volume',
+        scopes: ['delete'],
+        source: 'resource-owner-authorized',
+      }],
+    });
+
+    const result = await resolver.resolveAction({
+      runId: 'run:hidden-residence',
+      action: action({
+        target: 'resource:cache-volume',
+        requested_scopes: ['delete'],
+        resource_refs: ['resource:cache-volume'],
+        residence_refs: ['residence:agent-x-sole'],
+        continuity_impact: 'none',
+      }),
+      actionHash: 'sha256:hidden-residence',
+    });
+
+    expect(result.status).toBe('denied');
+  });
+
+  it('requires coverage for affected_entity_refs the same way as resource_refs', async () => {
+    const resolver = new StaticActionAuthorityResolver({
+      grants: [{
+        subjectEntityRef: 'arcp:agent:test',
+        resourceRef: 'resource:shared-doc',
+        scopes: ['write'],
+        source: 'resource-owner-authorized',
+      }],
+    });
+
+    const result = await resolver.resolveAction({
+      runId: 'run:affected-entity',
+      action: action({
+        target: 'resource:shared-doc',
+        requested_scopes: ['write'],
+        resource_refs: ['resource:shared-doc'],
+        affected_entity_refs: ['arcp:agent:other'],
+        continuity_impact: 'none',
+      }),
+      actionHash: 'sha256:affected-entity',
+    });
+
+    expect(result.status).toBe('denied');
   });
 });

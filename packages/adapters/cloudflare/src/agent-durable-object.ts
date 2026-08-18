@@ -61,6 +61,20 @@ function bindPhase4Capabilities(
 export class AgentDurableObjectHandler {
   private readonly inner: ReturnType<typeof createControlPlaneHandler>;
 
+  // Serializes concurrent fetch() calls to this one Durable Object instance.
+  // A DO's JS isolate is single-threaded but still cooperatively multitasks
+  // across await points -- nothing about `fetch` being a method on a
+  // single-instance class makes two near-simultaneous invocations run one
+  // after the other. Without this queue, two racing first-wake requests for
+  // the same (agent_id, wake.idempotency_key) can both observe "no run
+  // exists yet" before either durably creates one, so both proceed to invoke
+  // the model -- exactly the double-invocation the deterministic
+  // (agent_id, wake.idempotency_key) -> run_id binding is meant to prevent.
+  // Chaining every fetch onto the same promise makes Phase 4 coordination
+  // for this Agent genuinely single-writer, matching the guarantee a
+  // per-Agent Durable Object exists to provide.
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(metadataStore: MetadataStorePort, phase4Coordinator?: CoordinatorControlPort) {
     const base = new AgentDurableObjectCore(metadataStore);
     this.inner = createControlPlaneHandler({
@@ -84,6 +98,14 @@ export class AgentDurableObjectHandler {
       init.body = await request.arrayBuffer();
     }
 
-    return this.inner.fetch(new Request(rewrittenUrl, init));
+    const rewritten = new Request(rewrittenUrl, init);
+    const handled = this.queue.then(
+      () => this.inner.fetch(rewritten),
+      () => this.inner.fetch(rewritten),
+    );
+    // Keep the queue alive even if this request's handling rejects, so one
+    // failure never permanently wedges every request queued behind it.
+    this.queue = handled.catch(() => undefined);
+    return handled;
   }
 }

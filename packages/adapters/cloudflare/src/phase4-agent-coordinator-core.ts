@@ -106,8 +106,19 @@ export class Phase4AgentCoordinatorCore extends AgentDurableObjectCore {
     if (record.agent_id !== agentId) {
       throw new WorkflowError('invalid_persisted_state', 'containment Agent does not match coordinator Agent', false);
     }
-    await this.runStore.appendContainment(record);
-    return structuredClone(record);
+    // renewal_count is a governance fact (AREC v0.1.1 SS3.1), never
+    // caller-trusted input -- it is always derived from the existing
+    // record's own count, incremented only on an actual renewal, so an
+    // active<->renewed loop stays auditable instead of an indefinite,
+    // uncounted cycle.
+    const active = await this.runStore.activeContainments(agentId);
+    const existing = active.find((item) => item.containment_id === record.containment_id);
+    const renewalCount = record.status === 'renewed'
+      ? (existing?.renewal_count ?? 0) + 1
+      : existing?.renewal_count ?? 0;
+    const toStore: ContainmentRecord = { ...record, renewal_count: renewalCount };
+    await this.runStore.appendContainment(toStore);
+    return structuredClone(toStore);
   }
 
   async releaseContainment(agentId: string, containmentId: string): Promise<{ released: boolean }> {

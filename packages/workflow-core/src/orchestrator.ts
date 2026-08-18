@@ -12,7 +12,7 @@ import type {
   WakeRecord,
 } from '@arcp/schema';
 import { createApprovalRequest, evaluateApprovalSatisfaction } from './approvals.js';
-import { compareRisk } from './budget.js';
+import { compareRisk, type BudgetDimension } from './budget.js';
 import { evaluateContainment } from './containment.js';
 import { WorkflowError } from './errors.js';
 import { recoverExecutionDecision } from './execution-ledger.js';
@@ -263,6 +263,15 @@ export class BoundedRunOrchestrator {
         observed_at: this.options.now(),
       });
       await this.options.store.settleModelBudget(run.run_id, turnReservationId, 1);
+      // Token/cost usage is only known once the model has already responded,
+      // so unlike 'turns' this reserves and settles the actual amount in one
+      // step rather than reserving a fixed amount up front. A dimension the
+      // model does not report usage for (usage.inputTokens etc. undefined)
+      // is left untouched rather than charged zero, so it stays visibly
+      // unbudgeted rather than misleadingly "at 0 of limit".
+      await this.chargeReportedUsage(run, turnIndex, 'model_input_tokens', proposal.usage.inputTokens);
+      await this.chargeReportedUsage(run, turnIndex, 'model_output_tokens', proposal.usage.outputTokens);
+      await this.chargeReportedUsage(run, turnIndex, 'model_cost_micros', proposal.usage.costMicros);
 
       run = await this.options.store.updateRun({
         ...run,
@@ -433,6 +442,72 @@ export class BoundedRunOrchestrator {
       );
     }
 
+    // 'waiting' and 'contained' are pre-execution pauses -- nothing has been
+    // claimed/executed yet, so a full re-authorization (mirroring
+    // processFreshAction's branch set) is safe and required: policy can
+    // legitimately re-evaluate to request-approval/require-multi-party once
+    // resumed (e.g. the risk window changed), and executing anyway would
+    // bypass approval entirely -- exactly what AREC's binding boundaries
+    // ("approval != permanent subordination", trigger != authority) exist to
+    // prevent. 'executing'/'reconciling'/'committing' resumes are mid-flight
+    // crash recovery for an action already underway or already effected;
+    // re-routing those to a fresh approval/delay wait would misrepresent an
+    // in-progress or completed effect as not-yet-decided, so they keep the
+    // narrower authority/policy sanity check only and hand off directly to
+    // executeAuthorizedAction, which owns its own phase transitions.
+    if (run.phase === 'waiting' || run.phase === 'contained') {
+      run = await this.transition(run, 'authorizing');
+      const authority = await this.resolveAuthority(run, action, actionHash);
+      if (authority.status === 'denied') {
+        throw new WorkflowError('action_authority_denied', 'pending action no longer has authority', false);
+      }
+
+      const policy = this.evaluatePolicy(run, action, approvalValid);
+      if (policy.decision === 'deny') {
+        throw new WorkflowError('action_authority_denied', 'pending action no longer passes policy', false);
+      }
+
+      if (policy.decision === 'request-approval' || policy.decision === 'require-multi-party') {
+        const parties = [...new Set(this.options.defaultApprovalParties ?? [])];
+        if (parties.length === 0) {
+          throw new WorkflowError('approval_invalid', 'approval-required action has no configured approval parties', false);
+        }
+        const expiresAt = approvalExpiry(actionHash, wake, authority);
+        const request = createApprovalRequest({
+          runId: run.run_id,
+          actionId: action.action_id,
+          actionHash,
+          authority,
+          policyVersion: policy.policy_version,
+          requiredParties: parties,
+          requestedScope: action.requested_scopes,
+          bindingResourceScope: authority.resource_scope,
+          createdAt: this.options.now(),
+          expiresAt,
+        });
+        await this.options.store.createApprovalRequest(request);
+        run = await this.savePendingCheckpoint(
+          run, context, action, actionHash, authority, checkpoint.pending_model_stop_reason, request.approval_request_id,
+        );
+        run = await this.transition(run, 'waiting-approval', 'approval-required');
+        return {
+          run,
+          stopReason: run.stop_reason,
+          pendingApprovalRequestId: request.approval_request_id,
+        };
+      }
+
+      if (policy.decision === 'delay') {
+        run = await this.savePendingCheckpoint(run, context, action, actionHash, authority, checkpoint.pending_model_stop_reason);
+        run = await this.transition(run, 'waiting', 'policy-delay');
+        return { run, stopReason: run.stop_reason };
+      }
+
+      return this.executeAuthorizedAction(
+        run, action, actionHash, authority, policy, context, wake, checkpoint.pending_model_stop_reason,
+      );
+    }
+
     const authority = await this.resolveAuthority(run, action, actionHash);
     const policy = this.evaluatePolicy(run, action, approvalValid);
     if (authority.status === 'denied' || policy.decision === 'deny') {
@@ -459,21 +534,32 @@ export class BoundedRunOrchestrator {
       throw new WorkflowError('execution_failed', `authorized action ${action.action_id} has no Phase 4 executor/commit port`, false);
     }
 
-    const containments = await this.options.store.activeContainments(run.agent_id);
-    const blocked = action.requested_scopes.some((scope) =>
-      evaluateContainment(containments, `external-action:${scope}`).blocked,
-    );
-    if (blocked) {
-      if (run.phase !== 'contained') run = await this.transition(run, 'contained', 'containment-active');
-      return { run, stopReason: run.stop_reason };
-    }
-
     const descriptor = executor.descriptor();
     const executionId = compactHash('arcp:execution:', { runId: run.run_id, actionHash });
     const providerIdempotencyKey = descriptor.idempotencyMode === 'provider-enforced'
       ? action.idempotency_key
       : undefined;
     let execution = await this.options.store.getActionExecution(executionId);
+
+    // Containment restricts channels for NEW external effects; it must not
+    // block recording/committing evidence of an effect that already
+    // happened (AREC: "an already-performed effect's receipt/audit evidence
+    // remains recordable" -- suspend != identity/evidence rewrite). Compute
+    // recovery for any already-claimed execution BEFORE the containment
+    // gate, so a run stuck between "receipt recorded" and "canonically
+    // committed" can still finish while contained.
+    const priorRecovery = execution ? recoverExecutionDecision(execution) : null;
+    if (priorRecovery !== 'commit-only' && priorRecovery !== 'done') {
+      const containments = await this.options.store.activeContainments(run.agent_id);
+      const blocked = action.requested_scopes.some((scope) =>
+        evaluateContainment(containments, `external-action:${scope}`).blocked,
+      );
+      if (blocked) {
+        if (run.phase !== 'contained') run = await this.transition(run, 'contained', 'containment-active');
+        return { run, stopReason: run.stop_reason };
+      }
+    }
+
     if (!execution) {
       execution = await this.options.store.reserveBudgetAndClaimAction({
         runId: run.run_id,
@@ -492,7 +578,7 @@ export class BoundedRunOrchestrator {
       });
     }
 
-    const recovery = recoverExecutionDecision(execution);
+    const recovery = priorRecovery ?? recoverExecutionDecision(execution);
     if (recovery === 'done') {
       return this.finishAfterCanonicalAction(run, stopReason);
     }
@@ -669,6 +755,20 @@ export class BoundedRunOrchestrator {
     return { run };
   }
 
+  private async chargeReportedUsage(
+    run: RunRecord,
+    turnIndex: number,
+    dimension: BudgetDimension,
+    amount: number | undefined,
+  ): Promise<void> {
+    if (amount === undefined || amount <= 0) return;
+    const reservationId = `budget:${dimension}:${run.run_id}:${turnIndex}`;
+    await this.options.store.reserveModelBudget(run.run_id, run.fencing_token, {
+      reservationId, dimension, amount,
+    });
+    await this.options.store.settleModelBudget(run.run_id, reservationId, amount);
+  }
+
   private async resolveAuthority(run: RunRecord, action: ActionIntent, actionHash: string): Promise<AuthorityResolution> {
     const authority = compareRisk(action.risk, run.budget_spec.max_risk) > 0
       ? deniedForRisk(run.run_id, action, actionHash)
@@ -688,6 +788,12 @@ export class BoundedRunOrchestrator {
       requested_scopes: action.requested_scopes,
       lease_fencing_token: run.fencing_token,
       budget: { remaining: run.budget_spec.max_external_actions, unit: 'external-actions' },
+      // Hardcoded: no component in this codebase currently produces a
+      // version != 1, so ApprovalRequest.policy_version binding (see
+      // resumePendingAction) cannot yet detect a real policy-version change
+      // between approval-creation and consumption. Real policy versioning is
+      // a separate, not-yet-built capability -- known limitation, not an
+      // oversight to silently paper over here.
       policy_version: 1,
     };
     return this.options.policy.evaluate(input, { hasValidApproval });

@@ -95,7 +95,7 @@ describe('Phase4AgentCoordinatorCore', () => {
       scope: ['external-action:write'], reason: 'fixture', authority_source: 'policy-authorized', entered_at: now,
       expires_at: now, review_required: true, exit_conditions: ['review'], status: 'active',
     };
-    await expect(core.applyContainment(agentId, containment)).resolves.toEqual(containment);
+    await expect(core.applyContainment(agentId, containment)).resolves.toEqual({ ...containment, renewal_count: 0 });
     await expect(core.releaseContainment(agentId, containment.containment_id)).resolves.toEqual({ released: true });
     expect(await store.activeContainments(agentId)).toEqual([]);
   });
@@ -105,5 +105,30 @@ describe('Phase4AgentCoordinatorCore', () => {
     await store.createRunIfAbsent(run());
     const core = new Phase4AgentCoordinatorCore(new InMemoryMetadataStore(), store, { advance: async () => ({ run: run() }) } as any);
     await expect(core.getRun('arcp:agent:other', 'run:core:1')).resolves.toBeNull();
+  });
+
+  it('derives renewal_count server-side on each actual renewal instead of trusting the caller-supplied value', async () => {
+    const store = new InMemoryRunStateStore();
+    const core = new Phase4AgentCoordinatorCore(new InMemoryMetadataStore(), store, { advance: async () => ({ run: run() }) } as any);
+    const containment: ContainmentRecord = {
+      schema: 'arcp/containment/0.1', containment_id: 'containment:renewal:1', agent_id: agentId,
+      scope: ['external-action:write'], reason: 'fixture', authority_source: 'policy-authorized', entered_at: now,
+      expires_at: now, review_required: true, exit_conditions: ['review'], status: 'active',
+    };
+
+    const applied = await core.applyContainment(agentId, containment);
+    expect(applied.renewal_count).toBe(0);
+
+    // A renewal caller supplying a spoofed renewal_count must not be trusted --
+    // the server always derives it from the existing record.
+    const firstRenewal = await core.applyContainment(agentId, { ...containment, status: 'renewed', renewal_count: 999 });
+    expect(firstRenewal.renewal_count).toBe(1);
+
+    const secondRenewal = await core.applyContainment(agentId, { ...containment, status: 'renewed' });
+    expect(secondRenewal.renewal_count).toBe(2);
+
+    // Re-applying without a status of 'renewed' does not itself increment the count.
+    const reapplied = await core.applyContainment(agentId, { ...containment, status: 'active' });
+    expect(reapplied.renewal_count).toBe(2);
   });
 });

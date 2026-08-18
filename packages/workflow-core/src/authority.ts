@@ -55,11 +55,27 @@ export class StaticActionAuthorityResolver implements ActionAuthorityResolverPor
 
   async resolveAction(input: ActionAuthorityInput): Promise<AuthorityResolution> {
     const subject = input.action.subject_entity_ref ?? input.action.actor;
-    const resources = input.action.resource_refs?.length
-      ? [...new Set(input.action.resource_refs)]
+    const resourceRefs = input.action.resource_refs?.length
+      ? input.action.resource_refs
       : [input.action.target];
+    const residenceRefs = input.action.residence_refs ?? [];
+    const affectedEntityRefs = input.action.affected_entity_refs ?? [];
+    // residence_refs and affected_entity_refs are Phase 4 impact hints naming
+    // objects an action affects beyond its literal resource_refs (e.g. deleting
+    // a shared volume that also happens to back a *different* entity's sole
+    // Residence). They require their own explicit coverage: a grant for one
+    // resource must never be read as implicitly covering a residence/entity
+    // that merely rode along in the same ActionIntent.
+    const resources = [...new Set([...resourceRefs, ...residenceRefs, ...affectedEntityRefs])];
+    const residenceRefSet = new Set(residenceRefs);
     const requested = [...new Set(input.action.requested_scopes)];
-    const destructive =
+    // continuity_impact is a model-reported hint, documented on ActionIntent
+    // itself as "never trusted authority facts" -- it can only ESCALATE
+    // caution, never substitute for independent verification. Any resource
+    // the action itself flags as residence-bearing (residence_refs) always
+    // requires continuity-safe authority regardless of what continuity_impact
+    // separately claims, since that claim cannot be relied on to rule it out.
+    const hintDestructive =
       input.action.continuity_impact === 'migration-required' ||
       input.action.continuity_impact === 'continuity-destructive';
 
@@ -74,13 +90,16 @@ export class StaticActionAuthorityResolver implements ActionAuthorityResolverPor
     // because both resources appear in the same ActionIntent.
     const covering: StaticAuthorityGrant[] = [];
     let fullyCovered = true;
+    let anyDestructive = hintDestructive;
     for (const resource of resources) {
+      const resourceDestructive = hintDestructive || residenceRefSet.has(resource);
+      if (resourceDestructive) anyDestructive = true;
       const scopes = requested.length > 0 ? requested : [''];
       for (const scope of scopes) {
         let candidates = eligible.filter((grant) =>
           grant.resourceRef === resource && (scope === '' || grant.scopes.includes(scope)),
         );
-        if (destructive) {
+        if (resourceDestructive) {
           candidates = candidates.filter((grant) => isContinuitySafe(grant.continuityPrecondition));
         }
         if (candidates.length === 0) {
@@ -94,7 +113,7 @@ export class StaticActionAuthorityResolver implements ActionAuthorityResolverPor
     const accepted = fullyCovered ? [...new Set(covering)] : [];
     const sources = [...new Set(accepted.map((grant) => grant.source))] as AuthoritySource[];
     const status: AuthorityResolution['status'] = accepted.length === 0 ? 'denied' : 'authorized';
-    const continuityPrecondition: ContinuityPrecondition = destructive
+    const continuityPrecondition: ContinuityPrecondition = anyDestructive
       ? (accepted.length === 0 ? 'separate-governance' : strongestContinuityPrecondition(accepted))
       : strongestContinuityPrecondition(accepted);
 

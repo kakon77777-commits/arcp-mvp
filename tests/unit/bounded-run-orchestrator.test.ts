@@ -124,4 +124,18 @@ describe('Phase 4 bounded run orchestrator', () => {
     expect(resolutions).toHaveLength(1);
     expect(resolutions[0]?.status).toBe('denied');
   });
+
+  it('enforces the model input-token budget instead of only tracking turns/external-actions', async () => {
+    const model = new DeterministicModelAdapter([
+      { actionIntents: [], usage: { inputTokens: 900 } },
+    ]);
+    const { engine } = orchestrator({
+      model,
+      budget: { ...DEFAULT_BOUNDED_RUN_BUDGET, max_model_input_tokens: 500 },
+    });
+
+    await expect(
+      engine.advance({ agentId: 'arcp:agent:test', wake: wake(), fencingToken: 5 }),
+    ).rejects.toMatchObject({ code: 'budget_exhausted' });
+  });
 });

@@ -191,6 +191,15 @@ export type RunPhase =
   | 'dead-lettered'
   | 'failed';
 
+/**
+ * As of this PR, only max_turns/max_external_actions/max_model_input_tokens/
+ * max_model_output_tokens/max_model_cost_micros are wired to real
+ * reservation/consumption calls in BoundedRunOrchestrator. The remaining
+ * fields are honored by RunStateStorePort/InMemoryBudgetLedger's counters
+ * but nothing yet calls into them from the orchestrator's turn/action loop,
+ * so a run cannot be stopped on those grounds alone yet -- see README.md
+ * "Bounded resource governance" for the current per-dimension status.
+ */
 export interface RunBudgetSpec {
   max_turns: number;
   max_wall_time_ms: number;
@@ -389,6 +398,8 @@ export interface ContainmentRecord {
   review_required: boolean;
   review_after?: InstantRef;
   renewal_authority?: string;
+  /** Server-derived, never caller-trusted (AREC v0.1.1 section 3.1) -- how many times this containment has been renewed, so an active<->renewed loop stays auditable/cappable rather than indefinite. */
+  renewal_count?: number;
   exit_conditions: string[];
   status: 'active' | 'review-due' | 'renewed' | 'released' | 'escalated';
 }

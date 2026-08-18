@@ -187,36 +187,33 @@ export class D1RunStateStore implements RunStateStorePort {
 
   async reserveModelBudget(runId: string, fencingToken: number, reservation: BudgetReservationInput): Promise<void> {
     await this.assertFencing(runId, fencingToken);
-    const existing = await this.db.prepare(
+    // The INSERT is the sole atomic boundary: arcp_model_budget_reservation_guard
+    // (BEFORE INSERT) validates the dimension exists and has room, and
+    // arcp_model_budget_reservation_reserve (AFTER INSERT) increments the
+    // ledger -- both within the same SQLite statement as the row write, so a
+    // crash can no longer leave a reservation row with no matching ledger
+    // increment. `OR IGNORE` makes a retried call with the same reservation_id
+    // (already-applied idempotent retry) a silent no-op rather than a PK
+    // conflict; it does not suppress the guard trigger's RAISE(ABORT, ...).
+    try {
+      await this.db.prepare(
+        `INSERT OR IGNORE INTO arcp_model_budget_reservations
+         (reservation_id, run_id, dimension, amount, status) VALUES (?, ?, ?, ?, 'reserved')`,
+      ).bind(reservation.reservationId, runId, reservation.dimension, reservation.amount).run();
+    } catch (error) {
+      mapSqlError(error);
+    }
+
+    const stored = await this.db.prepare(
       `SELECT run_id, dimension, amount, status FROM arcp_model_budget_reservations
        WHERE reservation_id = ?`,
     ).bind(reservation.reservationId).first<{
       run_id: string; dimension: string; amount: number; status: string;
     }>();
-    if (existing) {
-      if (existing.run_id !== runId || existing.dimension !== reservation.dimension || existing.amount !== reservation.amount) {
-        throw new WorkflowError('invalid_persisted_state', `model budget reservation collision: ${reservation.reservationId}`, false);
-      }
-      return;
+    if (!stored) throw new WorkflowError('invalid_persisted_state', `model budget reservation vanished: ${reservation.reservationId}`, false);
+    if (stored.run_id !== runId || stored.dimension !== reservation.dimension || stored.amount !== reservation.amount) {
+      throw new WorkflowError('invalid_persisted_state', `model budget reservation collision: ${reservation.reservationId}`, false);
     }
-
-    const budget = await this.db.prepare(
-      `SELECT limit_value, reserved, consumed FROM arcp_run_budget_ledger
-       WHERE run_id = ? AND dimension = ?`,
-    ).bind(runId, reservation.dimension).first<{ limit_value: number; reserved: number; consumed: number }>();
-    if (!budget) throw new WorkflowError('invalid_persisted_state', `missing budget dimension ${reservation.dimension}`, false);
-    if (budget.consumed + budget.reserved + reservation.amount > budget.limit_value) {
-      throw new WorkflowError('budget_exhausted', `budget exhausted for ${reservation.dimension}`, false);
-    }
-
-    await this.db.prepare(
-      `INSERT INTO arcp_model_budget_reservations
-       (reservation_id, run_id, dimension, amount, status) VALUES (?, ?, ?, ?, 'reserved')`,
-    ).bind(reservation.reservationId, runId, reservation.dimension, reservation.amount).run();
-    await this.db.prepare(
-      `UPDATE arcp_run_budget_ledger SET reserved = reserved + ?
-       WHERE run_id = ? AND dimension = ?`,
-    ).bind(reservation.amount, runId, reservation.dimension).run();
   }
 
   async settleModelBudget(runId: string, reservationId: string, actualAmount: number): Promise<void> {
@@ -229,11 +226,12 @@ export class D1RunStateStore implements RunStateStorePort {
     if (!Number.isFinite(actualAmount) || actualAmount < 0 || actualAmount > row.amount) {
       throw new WorkflowError('invalid_persisted_state', 'settled model budget exceeds reservation', false);
     }
-    await this.db.prepare(
-      `UPDATE arcp_run_budget_ledger
-       SET reserved = reserved - ?, consumed = consumed + ?, released = released + ?
-       WHERE run_id = ? AND dimension = ?`,
-    ).bind(row.amount, actualAmount, row.amount - actualAmount, runId, row.dimension).run();
+    // The status flip is the sole atomic boundary: arcp_model_budget_reservation_settle
+    // (AFTER UPDATE ... WHEN NEW.status='settled' AND OLD.status='reserved')
+    // applies the ledger delta in the same statement. The WHERE clause makes
+    // this settle idempotent -- if another caller already settled this
+    // reservation between the SELECT above and this UPDATE, zero rows change,
+    // the trigger does not fire, and the ledger is never double-subtracted.
     await this.db.prepare(
       `UPDATE arcp_model_budget_reservations SET status = 'settled', actual_amount = ?
        WHERE reservation_id = ? AND status = 'reserved'`,
@@ -321,15 +319,30 @@ export class D1RunStateStore implements RunStateStorePort {
   }
 
   async appendActionReceipt(receipt: ActionReceipt): Promise<void> {
+    // Dedupe by execution_id (UNIQUE, "at most one receipt row per execution"
+    // per the migration's own comment), not by receipt_id. receipt_id is a
+    // content hash that legitimately differs between an original attempt and
+    // a later reconcile pass for the SAME execution (different suffix), so a
+    // receipt_id-keyed lookup misses an already-recorded receipt on retry and
+    // attempts a second INSERT that only fails on the execution_id UNIQUE
+    // constraint -- an unmapped raw error that then repeats on every future
+    // resume. What idempotency actually requires is "this execution already
+    // has its recorded receipt", which execution_id states directly.
     const existing = await this.db.prepare(
-      `SELECT receipt_json FROM arcp_action_receipts WHERE receipt_id = ?`,
-    ).bind(receipt.receipt_id).first<{ receipt_json: string }>();
+      `SELECT receipt_json FROM arcp_action_receipts WHERE execution_id = ?`,
+    ).bind(receipt.execution_id).first<{ receipt_json: string }>();
     if (existing) {
-      if (!same(parse(existing.receipt_json), receipt)) {
-        throw new WorkflowError('invalid_persisted_state', `receipt id collision: ${receipt.receipt_id}`, false);
+      const parsed = parse<ActionReceipt>(existing.receipt_json);
+      if (parsed.execution_id !== receipt.execution_id || parsed.run_id !== receipt.run_id) {
+        throw new WorkflowError('invalid_persisted_state', `receipt execution mismatch: ${receipt.execution_id}`, false);
       }
       return;
     }
+    // The INSERT is the sole atomic boundary: arcp_action_receipt_budget_settle
+    // and arcp_action_receipt_lifecycle_update (both AFTER INSERT triggers)
+    // apply the budget/lifecycle side effects within the same statement, so a
+    // crash can no longer leave a receipt row persisted with the owning
+    // execution still showing lifecycle_status='executing'.
     try {
       await this.db.prepare(
         `INSERT INTO arcp_action_receipts (receipt_id, execution_id, run_id, receipt_json)
@@ -338,12 +351,6 @@ export class D1RunStateStore implements RunStateStorePort {
     } catch (error) {
       mapSqlError(error);
     }
-    await this.db.prepare(
-      `UPDATE arcp_action_executions
-       SET lifecycle_status = 'receipt-recorded', effect_status = ?,
-           reconciliation_status = ?, execution_json = execution_json
-       WHERE execution_id = ?`,
-    ).bind(receipt.status, receipt.status === 'unknown' ? 'pending' : 'not-required', receipt.execution_id).run();
   }
 
   async getActionExecution(executionId: string): Promise<ActionExecutionRecord | null> {

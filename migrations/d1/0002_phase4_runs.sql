@@ -156,3 +156,65 @@ BEGIN
        SELECT budget_dimension FROM arcp_action_executions WHERE execution_id = NEW.execution_id
      );
 END;
+
+-- The receipt INSERT is also the sole atomic boundary for recording that a
+-- receipt now exists: lifecycle/effect/reconciliation status move together
+-- with the receipt row in the same statement, so a crash between "receipt
+-- persisted" and "execution marked receipt-recorded" cannot happen.
+CREATE TRIGGER IF NOT EXISTS arcp_action_receipt_lifecycle_update
+AFTER INSERT ON arcp_action_receipts
+BEGIN
+  UPDATE arcp_action_executions
+     SET lifecycle_status = 'receipt-recorded',
+         effect_status = json_extract(NEW.receipt_json, '$.status'),
+         reconciliation_status = CASE
+           WHEN json_extract(NEW.receipt_json, '$.status') = 'unknown' THEN 'pending'
+           ELSE 'not-required'
+         END
+   WHERE execution_id = NEW.execution_id;
+END;
+
+-- Model-turn budget reservations follow the same one-INSERT-is-the-atomic-
+-- boundary pattern as the external-action claim above, instead of the
+-- separate SELECT-then-UPDATE round trips that previously left a crash
+-- window between "reservation row written" and "ledger incremented".
+CREATE TRIGGER IF NOT EXISTS arcp_model_budget_reservation_guard
+BEFORE INSERT ON arcp_model_budget_reservations
+BEGIN
+  SELECT CASE
+    WHEN NOT EXISTS (
+      SELECT 1 FROM arcp_run_budget_ledger
+       WHERE run_id = NEW.run_id AND dimension = NEW.dimension
+    ) THEN RAISE(ABORT, 'ARCP_BUDGET_DIMENSION_MISSING')
+    WHEN (
+      SELECT consumed + reserved + NEW.amount > limit_value
+        FROM arcp_run_budget_ledger
+       WHERE run_id = NEW.run_id AND dimension = NEW.dimension
+    ) THEN RAISE(ABORT, 'ARCP_BUDGET_EXHAUSTED')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS arcp_model_budget_reservation_reserve
+AFTER INSERT ON arcp_model_budget_reservations
+BEGIN
+  UPDATE arcp_run_budget_ledger
+     SET reserved = reserved + NEW.amount
+   WHERE run_id = NEW.run_id AND dimension = NEW.dimension;
+END;
+
+-- Settling a model-turn reservation is guarded the same way: the single
+-- status-flip UPDATE (WHERE status='reserved') is the atomic boundary, and
+-- the ledger delta only applies via the trigger when that flip actually took
+-- effect -- a crash before the flip leaves the reservation untouched
+-- (retryable), and a concurrent/duplicate settle attempt after the flip is a
+-- harmless no-op instead of double-subtracting from the ledger.
+CREATE TRIGGER IF NOT EXISTS arcp_model_budget_reservation_settle
+AFTER UPDATE OF status ON arcp_model_budget_reservations
+WHEN NEW.status = 'settled' AND OLD.status = 'reserved'
+BEGIN
+  UPDATE arcp_run_budget_ledger
+     SET reserved = reserved - NEW.amount,
+         consumed = consumed + NEW.actual_amount,
+         released = released + (NEW.amount - NEW.actual_amount)
+   WHERE run_id = NEW.run_id AND dimension = NEW.dimension;
+END;

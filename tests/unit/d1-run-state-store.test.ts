@@ -76,6 +76,63 @@ describe('D1RunStateStore', () => {
     });
   });
 
+  it('does not throw when a receipt for the same execution is appended twice with different receipt_ids (original attempt vs. reconcile), and keeps only the first', async () => {
+    const store = makeStore();
+    await store.createRunIfAbsent(run());
+    await store.reserveBudgetAndClaimAction({
+      runId: 'run:d1:1', fencingToken: 9, executionId: 'execution:d1:1', actionId: 'action:d1:1',
+      actionHash: 'sha256:d1-action-1', actionIdempotencyKey: 'action:key:d1:1', executorId: 'executor:d1',
+      providerIdempotencyMode: 'none', reservationId: 'reservation:d1:1',
+      budgetDimension: 'external_actions', budgetAmount: 1, claimedAt: now,
+    });
+    await store.markActionExecuting('execution:d1:1', 9, now);
+    await store.appendActionReceipt({
+      schema: 'arcp/action-receipt/0.1', receipt_id: 'receipt:original', execution_id: 'execution:d1:1',
+      run_id: 'run:d1:1', action_id: 'action:d1:1', status: 'succeeded', executor_id: 'executor:d1', observed_at: now,
+    });
+
+    await expect(store.appendActionReceipt({
+      schema: 'arcp/action-receipt/0.1', receipt_id: 'receipt:reconciled', execution_id: 'execution:d1:1',
+      run_id: 'run:d1:1', action_id: 'action:d1:1', status: 'succeeded', executor_id: 'executor:d1', observed_at: now,
+    })).resolves.toBeUndefined();
+
+    const receipts = await store.getActionReceipts('run:d1:1');
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.receipt_id).toBe('receipt:original');
+  });
+
+  it('reserves model-turn budget atomically: the ledger reflects the reservation immediately, and an over-limit reservation is rejected', async () => {
+    const db = createFakeD1Database(`${migration1}\n${migration2}`);
+    const store = new D1RunStateStore(db);
+    await store.createRunIfAbsent(run({ budget_spec: { ...DEFAULT_BOUNDED_RUN_BUDGET, max_turns: 1 } }));
+
+    await store.reserveModelBudget('run:d1:1', 9, { reservationId: 'reservation:turn:1', dimension: 'turns', amount: 1 });
+
+    const ledger = await db.prepare(
+      `SELECT reserved, consumed FROM arcp_run_budget_ledger WHERE run_id = ? AND dimension = 'turns'`,
+    ).bind('run:d1:1').first<{ reserved: number; consumed: number }>();
+    expect(ledger).toMatchObject({ reserved: 1, consumed: 0 });
+
+    await expect(store.reserveModelBudget('run:d1:1', 9, {
+      reservationId: 'reservation:turn:2', dimension: 'turns', amount: 1,
+    })).rejects.toMatchObject({ code: 'budget_exhausted' });
+  });
+
+  it('settles a model-turn reservation exactly once, even if settle is called again after the status flip', async () => {
+    const db = createFakeD1Database(`${migration1}\n${migration2}`);
+    const store = new D1RunStateStore(db);
+    await store.createRunIfAbsent(run());
+    await store.reserveModelBudget('run:d1:1', 9, { reservationId: 'reservation:turn:1', dimension: 'turns', amount: 1 });
+
+    await store.settleModelBudget('run:d1:1', 'reservation:turn:1', 1);
+    await store.settleModelBudget('run:d1:1', 'reservation:turn:1', 1);
+
+    const ledger = await db.prepare(
+      `SELECT reserved, consumed FROM arcp_run_budget_ledger WHERE run_id = ? AND dimension = 'turns'`,
+    ).bind('run:d1:1').first<{ reserved: number; consumed: number }>();
+    expect(ledger).toMatchObject({ reserved: 0, consumed: 1 });
+  });
+
   it('persists approvals, containments and dead letters as operational state', async () => {
     const store = makeStore();
     await store.createRunIfAbsent(run());

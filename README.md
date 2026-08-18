@@ -111,17 +111,30 @@ token before revalidating authority, policy, approval, budget and containment.
 ## Bounded resource governance
 
 A missing `budget_ref` never means unlimited execution. Phase 4 resolves an explicit
-bounded default and tracks multiple dimensions, including turns, active wall time,
-model tokens/cost, tool calls, external actions, storage writes, network requests,
-recursive wakes and maximum risk.
+bounded default (`RunBudgetSpec`) covering ten dimensions, but only some are wired to
+real reservation/consumption calls today:
 
-Where concurrency/retry could overspend, the semantic order is:
+- **Enforced**: `turns`, `external_actions`, `model_input_tokens`, `model_output_tokens`,
+  `model_cost_micros`.
+- **Declared but not yet enforced**: `wall_time_ms`, `tool_calls`, `storage_writes`,
+  `network_requests`, `recursive_wakes`. Their limits exist in the schema/default
+  profile and `InMemoryBudgetLedger` implements the counters, but nothing in the
+  orchestrator currently calls into them, so a run cannot yet be stopped on these
+  grounds alone. `wall_time_ms` specifically needs a real monotonic clock injection
+  point that does not exist yet (the orchestrator's own `now()` returns a CTCL
+  `InstantRef`, which Phase 3's own invariants deliberately keep out of lease/timing
+  math) -- this is a real gap, not an oversight, and should be closed as its own
+  piece of work rather than an incidental one-line fix.
+
+Where a dimension is enforced and concurrency/retry could overspend, the semantic
+order is:
 
 ```text
 check -> atomically reserve -> perform -> settle actual -> release unused
 ```
 
-Persisted approval/dormant waiting is not charged as active execution wall time.
+Persisted approval/dormant waiting is not charged as active execution wall time --
+today this is true only in the sense that `wall_time_ms` is not charged at all yet.
 
 ## Containment
 
