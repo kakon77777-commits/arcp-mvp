@@ -1,5 +1,5 @@
 {
-  "name": "@arcp/adapter-model",
+  "name": "@arcp/workflow-core",
   "version": "0.1.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -13,6 +13,6 @@
   },
   "dependencies": {
     "@arcp/schema": "workspace:*",
-    "@arcp/workflow-core": "workspace:*"
+    "@arcp/policy-engine": "workspace:*"
   }
 }

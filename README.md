@@ -1,32 +1,221 @@
 # ARCP-MVP
 
 Internal single-owner implementation of **ARCP × CTCL v0.1** — the Agent Residence
-Continuity Protocol, scoped to the MVP defined in
-[`arcp_ctcl_internal_web_mvp_implementation_spec_v0.1.md`](../arcp/arcp_ctcl_internal_web_mvp_implementation_spec_v0.1.md).
+Continuity Protocol, built phase-by-phase from the internal MVP specification and
+roadmap.
 
-See [`arcp_series_dependency_map_and_build_roadmap_v0.1.md`](../arcp/arcp_series_dependency_map_and_build_roadmap_v0.1.md)
-for the full document dependency map and phase-by-phase build plan,
-[`docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md`](docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md)
-for the Phase 2 residence-storage design, and
-[`docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md`](docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md)
-for the Phase 3 temporal design.
+Key design documents:
 
-**Before starting Phase 4**, read [`PHASE4_GOVERNANCE_INPUT.md`](PHASE4_GOVERNANCE_INPUT.md) —
-binding authority/continuity/containment semantics from the
-[AREC governance framework](docs/governance/README.md) that constrain promptless
-autonomous execution.
+- [`docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md`](docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md)
+- [`docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md`](docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md)
+- [`docs/superpowers/specs/2026-08-18-phase4-promptless-bounded-runs-design.md`](docs/superpowers/specs/2026-08-18-phase4-promptless-bounded-runs-design.md)
+- [`docs/superpowers/plans/2026-08-18-phase4-promptless-bounded-runs-implementation.md`](docs/superpowers/plans/2026-08-18-phase4-promptless-bounded-runs-implementation.md)
 
-## Status: Phase 3 — Temporal Provenance & Shared-Instant Integration
+Phase 4 is normatively constrained by [`PHASE4_GOVERNANCE_INPUT.md`](PHASE4_GOVERNANCE_INPUT.md)
+and the [AREC governance framework](docs/governance/README.md).
 
-- Phase 0 (schema, policy engine, in-memory coordinator, fake adapters): done.
-- Phase 1 control-plane foundation and Gate A: done and live on Cloudflare.
-- Phase 2 provider-neutral residence storage, synced-filesystem backend, reconciliation,
-  local observation bridge, and optional Google Drive API backend: done.
-- Phase 3 adds provider-neutral temporal evidence, a credential-free CTCL v1 REST adapter,
-  Ed25519 attestation verification, degraded-time trust evaluation, exact wake-time
-  compilation, and registered Common Instant handoff between independent clients.
+## Status: Phase 4 — Promptless Bounded Runs
 
-CTCL is a **temporal evidence/shared-coordinate layer**, not the coordinator clock:
+- Phase 0 — schema, deterministic policy, coordinator and fake adapters: **done**.
+- Phase 1 — Cloudflare control-plane foundation, D1/R2 and per-Agent Durable Object: **done**.
+- Phase 2 — provider-neutral Residence storage, synced filesystem, reconciliation bridge and optional Google Drive API backend: **done**.
+- Phase 3 — temporal provenance, CTCL adapter/trust/attestation, exact wake-time compiler and shared-instant handoff: **done**.
+- Phase 4 — provider-neutral bounded autonomous-run runtime, durable effect ledger, explicit authority, approval/resume, containment, reconciliation/dead-letter, D1 operational persistence and per-Agent HTTP/DO coordination: **deterministic implementation complete**.
+
+A **live model provider is not activated by default**. Gate C remains a separately
+controlled deployment activation. Normal CI uses deterministic model/action providers
+and requires no model API key, OAuth secret or external network access.
+
+The tracked Cloudflare Worker therefore does not silently substitute a fake model for
+a production model. A deployment that has not injected a Phase 4 coordinator/runtime
+capability fails closed for those operational endpoints rather than inventing live
+authority or execution.
+
+## Phase 4 meaning
+
+`promptless` means:
+
+> an authorized event may start a bounded run without a human typing a new prompt.
+
+It does **not** mean that waking grants unlimited authority.
+
+The fixed execution boundary is:
+
+```text
+WakeRecord
+  -> wake authority
+  -> hydrate/checkpoint
+  -> bounded ModelPort deliberation
+  -> ActionIntent
+  -> affected Entity / Resource / Residence resolution
+  -> AuthorityResolution
+  -> deterministic policy
+  -> exact approval state when required
+  -> budget reservation + durable action claim
+  -> executor
+  -> durable ActionReceipt / explicit unknown
+  -> canonical Residence commit
+```
+
+The binding governance/correctness rules include:
+
+```text
+trigger != authority
+capability != permission
+budget != ownership
+approval != permanent subordination
+suspend != identity rewrite
+resource authority != identity authority
+ActionIntent != AuthorityResolution
+model != executor
+provider effect != canonical Residence commit
+unknown external effect != blind retry
+```
+
+## Durable effect ledger
+
+Phase 4 separates external-effect accounting from the final Residence manifest commit.
+Before an effect crosses the provider boundary it receives a durable claim. The
+execution then moves through independent lifecycle, effect and reconciliation state.
+
+```text
+lifecycle:       claimed -> executing -> receipt-recorded -> canonically-recorded
+effect:          not-observed | succeeded | failed | partial | unknown
+reconciliation:  not-required | pending | reconciled | manual-required
+```
+
+A crash after `executing` but before a definitive receipt is treated conservatively.
+ARCP reconciles provider state instead of blindly executing again. A succeeded receipt
+followed by a canonical-commit crash retries persistence/commit only; it does not repeat
+the external effect.
+
+The D1 implementation uses dedicated Phase 4 operational tables in
+`migrations/d1/0002_phase4_runs.sql`. External-action budget reservation and durable
+claim share one SQLite/D1 atomic boundary so a crash cannot leave only one half applied.
+
+## Authority, approval and Residence protection
+
+The model only proposes structured `ActionIntent` values. It cannot self-certify an
+authority source and never receives a privileged executor/connector.
+
+The deterministic reference authority resolver requires every affected
+`resource × requested scope` pair to be covered. Ordinary Resource ownership cannot by
+itself authorize `migration-required` or `continuity-destructive` actions against a
+Residence-bearing Resource.
+
+Approval binds to the exact action, authority resolution, policy version, resource
+scope, expiry and required parties. Waiting for approval is persisted continuation —
+there is no process held open. Resume rehydrates the checkpoint and uses a fresh fencing
+token before revalidating authority, policy, approval, budget and containment.
+
+## Bounded resource governance
+
+A missing `budget_ref` never means unlimited execution. Phase 4 resolves an explicit
+bounded default (`RunBudgetSpec`) covering ten dimensions, but only some are wired to
+real reservation/consumption calls today:
+
+- **Enforced**: `turns`, `external_actions`, `model_input_tokens`, `model_output_tokens`,
+  `model_cost_micros`.
+- **Declared but not yet enforced**: `wall_time_ms`, `tool_calls`, `storage_writes`,
+  `network_requests`, `recursive_wakes`. Their limits exist in the schema/default
+  profile and `InMemoryBudgetLedger` implements the counters, but nothing in the
+  orchestrator currently calls into them, so a run cannot yet be stopped on these
+  grounds alone. `wall_time_ms` specifically needs a real monotonic clock injection
+  point that does not exist yet (the orchestrator's own `now()` returns a CTCL
+  `InstantRef`, which Phase 3's own invariants deliberately keep out of lease/timing
+  math) -- this is a real gap, not an oversight, and should be closed as its own
+  piece of work rather than an incidental one-line fix.
+
+Where a dimension is enforced and concurrency/retry could overspend, the semantic
+order is:
+
+```text
+check -> atomically reserve -> perform -> settle actual -> release unused
+```
+
+Persisted approval/dormant waiting is not charged as active execution wall time --
+today this is true only in the sense that `wall_time_ms` is not charged at all yet.
+
+## Containment
+
+Containment restricts channels/scopes; it is not identity-rewrite authority. Records
+carry scope, expiry/review, renewal/release/escalation semantics. The runtime checks
+containment before external effects and preserves mandatory receipt/audit evidence for
+an effect that already happened.
+
+Integration coverage proves that containment activated after one external action keeps
+that first receipt/canonical commit while blocking a later matching action in the same
+run.
+
+## Trigger paths and deterministic run identity
+
+Schedule, webhook and committed-state triggers all compile into the same `WakeRecord`
+contract. Trigger transport/source acceptance remains separate from wake authority.
+
+A first run has a deterministic binding:
+
+```text
+(agent_id, wake.idempotency_key) -> run_id
+```
+
+A first `/runs/:run/advance` request is accepted only when the requested run id matches
+that deterministic binding. Redelivery therefore resolves to the same logical run
+rather than resetting budget or invoking the model again.
+
+Current deterministic integration coverage includes:
+
+- authorized schedule wake -> bounded run;
+- untrusted webhook -> denied before model execution;
+- authorized state trigger -> bounded run;
+- approval wait -> grant -> fresh-fenced resume;
+- effect succeeds -> crash before receipt -> reconcile without second execute;
+- containment activates mid-run -> later effect blocked;
+- real `node:sqlite` D1 semantics -> per-Agent Durable Object HTTP -> bounded deterministic model run -> persisted run readback.
+
+## Phase 4 operational API
+
+The platform-neutral control plane and coordinator client expose these Phase 4
+capabilities when a runtime is injected:
+
+```text
+GET  /api/v1/agents/:agent/runs/:run
+POST /api/v1/agents/:agent/runs/:run/advance
+POST /api/v1/agents/:agent/approvals/:request/grants
+POST /api/v1/agents/:agent/containments
+POST /api/v1/agents/:agent/containments/:id/release
+```
+
+The Cloudflare coordinator transport routes the whole
+`/internal/v1/agents/:agent/...` namespace to the one Durable Object named by the
+canonical Agent ID. Leaf-route validation remains inside the internal control-plane
+handler, preserving the single-writer Agent boundary without hard-coding every future
+Phase 5 capability into the transport.
+
+## Gate C — live model activation
+
+Gate C is deliberately outside deterministic merge correctness. Activating a live
+model requires a selected `ModelPort` implementation and credentials supplied only by
+secret/environment configuration.
+
+A Gate C smoke must remain disposable and low-risk:
+
+1. one bounded turn;
+2. no privileged live executor exposed to the model;
+3. proposal parsing and usage accounting verified;
+4. only non-secret metadata recorded;
+5. provider choice cannot change Agent identity or canonical lineage.
+
+A live model/provider outage does not invalidate the deterministic Phase 4 runtime.
+
+Credential-free example:
+
+```text
+docs/examples/phase4-bounded-run.json
+```
+
+## Temporal provenance rules (Phase 3 preserved)
+
+CTCL remains a **temporal evidence/shared-coordinate layer**, not the coordinator clock:
 
 ```text
 CTCL shared instant / evidence
@@ -36,135 +225,56 @@ CTCL shared instant / evidence
     != nanosecond global causal ordering guarantee
 ```
 
-The coordinator never calls CTCL. Callers acquire temporal evidence first and pass
-compact `InstantRef` values into ARCP data. Lease/fencing behavior remains controlled
-by the local coordinator clock (`input.now` in deterministic tests).
+The coordinator never calls CTCL to decide lease/fencing order. Callers acquire
+`InstantRef` evidence before the turn and pass it into ARCP data. Network failure never
+forges a CTCL identity; permitted degraded evidence uses `local:unverified:*`.
 
-## Temporal provenance rules
+`@arcp/temporal-wake` compiles registered Common Instants, explicit IANA-local datetime
+and bounded planner constraints into exact wake instants. It does not dispatch the wake.
+DST gaps fail closed and folds require explicit resolution.
 
-A persisted temporal reference retains the shared instant identity and the context
-needed to interpret its representation:
-
-```text
-instant_id
-+ timescale
-+ encoding/value
-+ source quality / uncertainty
-+ optional attestation
-```
-
-Do not reduce a long-lived temporal reference to a bare timestamp. In particular,
-`unix_ns` is an encoding width, not a claim of nanosecond source accuracy. CTCL source
-precision and estimated uncertainty remain explicit.
-
-ARCP distinguishes several temporal roles rather than collapsing them into one field:
-
-- **event instant** — `EventEnvelope.observed_at`;
-- **write instant** — `ObjectVersion.write_instant`;
-- **commit instant** — optional `ResidenceManifest.commit_instant`;
-- **recall instant** — represented by the recall event's `observed_at`, not by mutating
-  the recalled `ObjectVersion`;
-- **wake instant** — optional exact `WakeRecord.not_before_instant` /
-  `expires_at_instant` alongside legacy string fields.
-
-A memory read therefore does not manufacture a new object version merely to record
-when recall happened. Recall is an event.
-
-## Temporal trust and degraded operation
-
-Network failure never forges a CTCL identity. When caller policy permits degraded
-operation, fallback evidence uses an explicit `local:unverified:*` namespace.
-
-The provider-neutral baseline temporal trust matrix is:
-
-```text
-not temporally sensitive      -> allow
-R0/R1 + degraded/missing      -> allow-with-log
-R2    + degraded/missing      -> delay
-R3/R4 + degraded/missing      -> require-evidence
-uncertainty above ceiling     -> require-evidence
-acceptable non-degraded data  -> allow
-```
-
-A string that merely looks like `ctcl:...` is not automatically trusted; source
-quality and verification state remain part of the decision.
-
-## Exact wake-time compiler
-
-`@arcp/temporal-wake` compiles temporal intent into an exact `InstantRef`; it does not
-execute or dispatch wakes. Supported modes are:
-
-1. an already registered Common Instant;
-2. an explicit local datetime plus an IANA timezone;
-3. bounded temporal constraints resolved by the shared-instant planner.
-
-Local datetime input is deliberately strict. Offset-bearing strings are rejected in
-IANA-local mode, nonexistent DST gap times fail closed, and repeated DST fold times
-require explicit `earlier` or `later` selection. Natural-language scheduling is
-outside Phase 3; upstream callers must make temporal intent explicit before compile.
-
-## Multi-agent shared-instant handoff
-
-A client can register one Common Instant, place its compact `InstantRef` into an ARCP
-event/handoff, and another independently constructed client can resolve the same
-`instant_id` back to the same canonical instant. The shared temporal coordinate does
-not transfer ARCP identity, policy authority, lease ownership, or canonical-state
-authority.
-
-## Packages
-
-```text
-packages/
-  arcp-schema/                    stable IDs, canonical JSON + SHA-256 hashing, core types
-  policy-engine/                  R0-R4 risk matrix, deterministic Permit() evaluation
-  coordinator/                    per-Agent state machine, lease/fencing, in-memory store
-  control-plane-core/             platform-neutral HTTP core, coordinator transport, storage ports
-  residence-storage/              provider-neutral residence contract, diff/error/hash semantics
-  residence-bridge/               local storage-observation publishing boundary; no canonical authority
-  temporal-evidence/              provider-neutral temporal evidence, errors, degraded fallback, trust
-  temporal-wake/                  exact registered/IANA/planner wake-boundary compiler
-  adapters/
-    ctcl/                          CTCL v1 REST adapter, deterministic compatibility provider, attestation
-    model/                         fake model adapter (scripted decisions)
-    cloudflare/                    D1/R2 storage adapters, Durable Object, Worker entrypoint
-    synced-filesystem/             recommended local-first residence backend
-    google-drive-api/              optional Drive v3 transport + residence backend
-migrations/d1/                    D1 schema migrations
-```
-
-## Residence storage selection
-
-The default/recommended local-first route remains **synced filesystem** for users who
-already run Google Drive for desktop, OneDrive, Dropbox, Syncthing, NAS sync, or
-another local synchronization client.
-
-The **Google Drive API** route remains optional for headless/cloud-only deployments or
-users who do not want to depend on a desktop sync client. Google OAuth is **not
-required** for the synced-filesystem route; real Google authorization is an activation
-gate only when `google-drive-api` is explicitly selected.
-
-Synced filesystem example:
-
-```text
-docs/examples/residence-storage.synced-filesystem.json
-```
-
-Optional Google Drive API example:
-
-```text
-docs/examples/residence-storage.google-drive-api.json
-```
-
-Phase 3 temporal evidence example:
+Phase 3 example:
 
 ```text
 docs/examples/phase3-temporal-evidence.json
 ```
 
-No token, cookie, OAuth client secret, Drive ID, user path, or other credential belongs
-in tracked examples.
+## Packages
 
-A successful backend write is deliberately narrower than an ARCP canonical commit:
+```text
+packages/
+  arcp-schema/                    core + Phase 4 persisted record types
+  policy-engine/                  deterministic R0-R4 policy evaluation
+  coordinator/                    canonical state machine, lease/fencing, commit semantics
+  control-plane-core/             platform-neutral HTTP + coordinator client/contracts
+  workflow-core/                  Phase 4 bounded-run orchestration and provider-neutral ports
+  residence-storage/              provider-neutral Residence storage contract
+  residence-bridge/               local observation/reconciliation publisher
+  temporal-evidence/              temporal evidence/trust/degraded fallback
+  temporal-wake/                  exact wake-intent compiler
+  adapters/
+    model/                         backwards fake + async deterministic ModelPort adapter
+    cloudflare/                    D1/R2, D1 run ledger, per-Agent DO, Worker routing
+    ctcl/                          CTCL v1 REST/attestation adapter
+    synced-filesystem/            recommended local-first Residence backend
+    google-drive-api/             optional Drive v3 Residence backend
+migrations/d1/
+  0001_init.sql                   Residence manifest/event metadata
+  0002_phase4_runs.sql            Phase 4 operational run/effect state
+```
+
+## Residence storage selection (Phase 2 preserved)
+
+The recommended local-first route is **synced filesystem** for Google Drive for desktop,
+OneDrive, Dropbox, Syncthing, NAS sync or equivalent local synchronization clients.
+The Google Drive API route is optional for headless/cloud deployments.
+
+```text
+docs/examples/residence-storage.synced-filesystem.json
+docs/examples/residence-storage.google-drive-api.json
+```
+
+A successful backend write remains narrower than an ARCP canonical transition:
 
 ```text
 storage/backend write success
@@ -174,19 +284,8 @@ storage/backend write success
     != lineage update
 ```
 
-For the synced-filesystem backend, a successful local write does **not** claim that
-an external cloud provider has uploaded or replicated the file; provider replication
-status remains unknown. The Google Drive API backend may report provider-confirmed
-storage operations after Drive accepts them, but that still does not imply an ARCP
-canonical transition.
-
-Cloudflare remains the control/coordination plane. A Cloudflare Worker does not read
-the user's desktop filesystem; desktop filesystem access belongs to the local runtime
-and `@arcp/residence-bridge` publishes provider-neutral reconciliation observations.
-
-The old `@arcp/adapter-drive` Phase 0 fake has been retired. Drive-specific operation
-now sits behind the provider-neutral `@arcp/residence-storage` contract and the
-optional `@arcp/adapter-google-drive-api` implementation.
+Cloudflare is the control/coordination plane. Desktop filesystem access stays in the
+local runtime/bridge rather than a Worker.
 
 ## Commands
 
@@ -196,50 +295,27 @@ pnpm test
 pnpm typecheck
 ```
 
-Normal tests and CI are deterministic, injected-Fetch based, and require **no CTCL
-network access, OAuth flow, cookie, API key, or secret**.
+Normal tests and CI are deterministic and require **no CTCL network access, model API
+key, Google OAuth, cookie or other secret**.
 
-## Optional public CTCL live smoke
+## Cloudflare deployment
 
-The public-service smoke is intentionally separate from merge correctness. It refuses
-to run unless explicitly enabled:
-
-```text
-ARCP_CTCL_LIVE=1 pnpm tsx scripts/ctcl-live-smoke.ts
-```
-
-It obtains a public current instant, registers one Common Instant with client A, and
-resolves that id with an independently constructed client B. Output is intentionally
-minimal and does not print signatures, cookies, headers, provider metadata, or
-environment variables. A public-service/network failure is recorded separately and
-does not invalidate the deterministic Phase 3 architecture.
-
-## Deploying the Cloudflare control plane
-
-`packages/adapters/cloudflare/wrangler.jsonc` is a **template only** — every
-database ID, bucket name, and the `compatibility_date` are `REPLACE_ME_*`
-placeholders, and it stays that way in git (this is a public repo).
-
-Real deploys use a gitignored `wrangler.local.jsonc` in the same directory,
-built from the template with actual resource IDs filled in:
+`packages/adapters/cloudflare/wrangler.jsonc` is a tracked **template only**. Real D1/R2
+identifiers remain in a gitignored local config.
 
 ```text
 cd packages/adapters/cloudflare
-npx wrangler d1 create arcp-mvp-metadata          # once, if not already provisioned
-npx wrangler r2 bucket create arcp-mvp-objects    # once, if not already provisioned
-# copy wrangler.jsonc -> wrangler.local.jsonc, fill in the real IDs it printed
+npx wrangler d1 create arcp-mvp-metadata
+npx wrangler r2 bucket create arcp-mvp-objects
+# copy wrangler.jsonc -> wrangler.local.jsonc and fill actual IDs there
 npx wrangler d1 migrations apply arcp-mvp-metadata --config wrangler.local.jsonc --remote
 npx wrangler deploy --config wrangler.local.jsonc
 ```
 
-Never fill real IDs into the tracked `wrangler.jsonc`; regenerate
-`wrangler.local.jsonc` instead.
+Do not commit real IDs, tokens or provider credentials.
 
-## Optional live Google Drive activation gate
+## Optional live gates
 
-Credential-free Phase 2 tests use injected fake transports only and do not require
-network access or OAuth consent. A real deployment selecting `google-drive-api`
-performs authorization outside Git, supplies `ARCP_GOOGLE_DRIVE_ROOT_ID` (and, for
-Shared Drive mode only, `ARCP_GOOGLE_DRIVE_SHARED_DRIVE_ID`) outside Git, and runs a
-separately gated disposable-file integration check. This live activation gate does
-not block the credential-free Phase 2 architecture or the synced-filesystem route.
+Phase 2 Google Drive API authorization, Phase 3 public CTCL smoke and Phase 4 live model
+Gate C are deployment activations. They are intentionally separate from credential-free
+architecture correctness and are not required for normal CI/PR review.

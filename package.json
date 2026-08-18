@@ -24,6 +24,7 @@
     "@arcp/residence-bridge": "workspace:*",
     "@arcp/temporal-evidence": "workspace:*",
     "@arcp/temporal-wake": "workspace:*",
+    "@arcp/workflow-core": "workspace:*",
     "@arcp/adapter-cloudflare": "workspace:*",
     "@arcp/adapter-ctcl": "workspace:*",
     "@arcp/adapter-google-drive-api": "workspace:*",

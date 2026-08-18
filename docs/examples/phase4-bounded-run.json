@@ -1,0 +1,48 @@
+{
+  "schema": "arcp/phase4-example/0.1",
+  "note": "Credential-free deterministic example. This file contains no live model or provider credentials.",
+  "agent_id": "arcp:agent:example:phase4",
+  "wake": {
+    "schema": "arcp/wake/0.1",
+    "wake_id": "wake:example:phase4:daily",
+    "trigger_type": "schedule",
+    "trigger_ref": "schedule:daily-summary",
+    "required_authority": "schedule:example.daily-summary",
+    "revalidate_on_wake": true,
+    "idempotency_key": "wake:key:example:phase4:daily:2026-08-18"
+  },
+  "budget": {
+    "max_turns": 4,
+    "max_wall_time_ms": 30000,
+    "max_model_input_tokens": 16000,
+    "max_model_output_tokens": 4000,
+    "max_model_cost_micros": 1000000,
+    "max_tool_calls": 8,
+    "max_external_actions": 4,
+    "max_storage_writes": 8,
+    "max_network_requests": 8,
+    "max_recursive_wakes": 2,
+    "max_risk": "R2"
+  },
+  "static_authority_example": {
+    "subject_entity_ref": "arcp:agent:example:phase4",
+    "resource_ref": "resource:example:report",
+    "scopes": ["read", "write"],
+    "source": "self-authorized",
+    "continuity_precondition": "none"
+  },
+  "boundaries": [
+    "trigger != authority",
+    "capability != permission",
+    "ActionIntent != AuthorityResolution",
+    "model != executor",
+    "external effect receipt != canonical Residence commit",
+    "unknown effect => reconcile, never blind retry"
+  ],
+  "live_activation": {
+    "gate": "Gate C",
+    "required_for_deterministic_ci": false,
+    "model_provider": null,
+    "credentials_in_git": false
+  }
+}

@@ -36,6 +36,37 @@ describe('Cloudflare coordinator transport', () => {
     expect(forwarded[0]!.headers.get('X-ARCP-Request-ID')).toBe('req_cf_1');
   });
 
+  it('routes Phase 4 nested run/approval/containment paths through the same Agent Durable Object', async () => {
+    const names: string[] = [];
+    const paths: string[] = [];
+    const namespace: DurableObjectNamespaceLike = {
+      getByName(name) {
+        names.push(name);
+        return {
+          async fetch(request) {
+            paths.push(new URL(request.url).pathname);
+            return new Response('ok', { status: 200 });
+          },
+        };
+      },
+    };
+    const transport = new CloudflareCoordinatorTransport(namespace);
+    const encodedAgent = encodeURIComponent(agentId);
+    const routes = [
+      `/internal/v1/agents/${encodedAgent}/runs/run%3A1`,
+      `/internal/v1/agents/${encodedAgent}/runs/run%3A1/advance`,
+      `/internal/v1/agents/${encodedAgent}/approvals/approval%3A1/grants`,
+      `/internal/v1/agents/${encodedAgent}/containments`,
+      `/internal/v1/agents/${encodedAgent}/containments/containment%3A1/release`,
+    ];
+
+    for (const path of routes) {
+      await expect(transport.fetch(new Request(`https://coordinator.internal${path}`))).resolves.toHaveProperty('status', 200);
+    }
+    expect(names).toEqual(routes.map(() => agentId));
+    expect(paths).toEqual(routes);
+  });
+
   it('fails closed when a request does not contain a canonical per-Agent coordinator route', async () => {
     let called = false;
     const namespace: DurableObjectNamespaceLike = {
