@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { InMemoryMetadataStore } from '@arcp/control-plane-core';
 import { Phase4AgentCoordinatorCore } from '@arcp/adapter-cloudflare';
 import { DEFAULT_BOUNDED_RUN_BUDGET, InMemoryRunStateStore } from '@arcp/workflow-core';
-import type { ApprovalGrant, ContainmentRecord, RunRecord, WakeRecord } from '@arcp/schema';
+import type { ApprovalGrant, ApprovalRequest, ContainmentRecord, RunRecord, WakeRecord } from '@arcp/schema';
 
 const agentId = 'arcp:agent:phase4-core';
 const now = { instant_id: 'local:unverified:phase4-core', unverified: true } as const;
@@ -23,6 +23,14 @@ describe('Phase4AgentCoordinatorCore', () => {
   it('owns run lookup/advance fencing and Phase 4 governance mutations for one Agent', async () => {
     const store = new InMemoryRunStateStore();
     await store.createRunIfAbsent(run());
+    const approval: ApprovalRequest = {
+      schema: 'arcp/approval-request/0.1', approval_request_id: 'approval:core:1', run_id: 'run:core:1',
+      action_id: 'action:core:1', action_hash: 'sha256:action', authority_resolution_hash: 'sha256:authority',
+      policy_version: 1, binding_hash: 'sha256:binding', required_parties: ['entity:neo'], requested_scope: ['write'],
+      created_at: now, expires_at: now, status: 'pending',
+    };
+    await store.createApprovalRequest(approval);
+
     const advances: any[] = [];
     const orchestrator = {
       async advance(input: any) {
@@ -42,7 +50,7 @@ describe('Phase4AgentCoordinatorCore', () => {
     expect(advances[0]).toMatchObject({ agentId, runId: 'run:core:1', fencingToken: 5 });
 
     const grant: ApprovalGrant = {
-      schema: 'arcp/approval-grant/0.1', approval_grant_id: 'grant:core:1', approval_request_id: 'approval:core:1',
+      schema: 'arcp/approval-grant/0.1', approval_grant_id: 'grant:core:1', approval_request_id: approval.approval_request_id,
       approver_entity_ref: 'entity:neo', granted_scope: ['write'], granted_at: now, idempotency_key: 'grant:key:core:1',
     };
     await expect(core.submitApprovalGrant(agentId, grant.approval_request_id, grant)).resolves.toEqual({ accepted: true });
