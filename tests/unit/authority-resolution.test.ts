@@ -39,6 +39,30 @@ describe('Phase 4 static action authority resolver', () => {
     expect(result.resource_scope).toEqual(['resource:data#write']);
   });
 
+  it('requires every affected resource and requested scope to be explicitly covered', async () => {
+    const resolver = new StaticActionAuthorityResolver({
+      grants: [{
+        subjectEntityRef: 'arcp:agent:test',
+        resourceRef: 'resource:a',
+        scopes: ['write'],
+        source: 'resource-owner-authorized',
+      }],
+    });
+
+    const result = await resolver.resolveAction({
+      runId: 'run:multi-resource',
+      action: action({
+        resource_refs: ['resource:a', 'resource:b'],
+        requested_scopes: ['write'],
+        continuity_impact: 'none',
+      }),
+      actionHash: 'sha256:multi-resource',
+    });
+
+    expect(result.status).toBe('denied');
+    expect(result.resource_scope).toEqual([]);
+  });
+
   it('does not let ordinary resource ownership destroy a sole Residence', async () => {
     const resolver = new StaticActionAuthorityResolver({
       grants: [{
