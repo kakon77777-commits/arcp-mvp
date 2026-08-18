@@ -11,6 +11,11 @@ for the Phase 2 residence-storage design, and
 [`docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md`](docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md)
 for the Phase 3 temporal design.
 
+**Before starting Phase 4**, read [`PHASE4_GOVERNANCE_INPUT.md`](PHASE4_GOVERNANCE_INPUT.md) —
+binding authority/continuity/containment semantics from the
+[AREC governance framework](docs/governance/README.md) that constrain promptless
+autonomous execution.
+
 ## Status: Phase 3 — Temporal Provenance & Shared-Instant Integration
 
 - Phase 0 (schema, policy engine, in-memory coordinator, fake adapters): done.
