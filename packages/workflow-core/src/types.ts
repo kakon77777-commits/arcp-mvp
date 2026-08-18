@@ -129,6 +129,7 @@ export interface BoundedRunAdvanceResult {
   run: RunRecord;
   manifest?: ResidenceManifest;
   stopReason?: string;
+  pendingApprovalRequestId?: string;
 }
 
 export interface StaticAuthorityGrant {
