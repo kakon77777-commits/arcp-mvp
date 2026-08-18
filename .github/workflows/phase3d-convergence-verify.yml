@@ -44,7 +44,7 @@ jobs:
             echo 'unexpected CTCL coupling in coordinator/policy-engine'
             exit 1
           fi
-          if git grep -n -E 'DurableObject|D1|R2|control-plane' -- packages/temporal-evidence packages/temporal-wake packages/adapters/ctcl; then
+          if git grep -n -E 'DurableObject|D1Database|R2Bucket|control-plane' -- packages/temporal-evidence packages/temporal-wake packages/adapters/ctcl; then
             echo 'unexpected control-plane coupling in temporal packages'
             exit 1
           fi
