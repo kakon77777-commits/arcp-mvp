@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryMetadataStore } from '@arcp/control-plane-core';
 import { Phase4AgentCoordinatorCore } from '@arcp/adapter-cloudflare';
-import { DEFAULT_BOUNDED_RUN_BUDGET, InMemoryRunStateStore } from '@arcp/workflow-core';
+import {
+  DEFAULT_BOUNDED_RUN_BUDGET,
+  InMemoryRunStateStore,
+  deriveRunId,
+} from '@arcp/workflow-core';
 import type { ApprovalGrant, ApprovalRequest, ContainmentRecord, RunRecord, WakeRecord } from '@arcp/schema';
 
 const agentId = 'arcp:agent:phase4-core';
@@ -20,6 +24,37 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 }
 
 describe('Phase4AgentCoordinatorCore', () => {
+  it('starts a first run only when the requested run id is the deterministic wake binding', async () => {
+    const store = new InMemoryRunStateStore();
+    const firstWake: WakeRecord = {
+      schema: 'arcp/wake/0.1', wake_id: 'wake:first:1', trigger_type: 'schedule', trigger_ref: 'schedule:daily',
+      required_authority: 'schedule:daily', revalidate_on_wake: true, idempotency_key: 'wake:key:first:1',
+    };
+    const expectedRunId = deriveRunId(agentId, firstWake.idempotency_key);
+    const advances: any[] = [];
+    const core = new Phase4AgentCoordinatorCore(new InMemoryMetadataStore(), store, {
+      async advance(input: any) {
+        advances.push(input);
+        const created = await store.createRunIfAbsent({
+          schema: 'arcp/run/0.1', run_id: expectedRunId, agent_id: agentId, wake_id: firstWake.wake_id,
+          wake_idempotency_key: firstWake.idempotency_key, phase: 'completed', fencing_token: input.fencingToken,
+          budget_spec: { ...DEFAULT_BOUNDED_RUN_BUDGET }, turn_index: 1, checkpoint_sequence: 0,
+          created_at: now, updated_at: now, stop_reason: 'fixture',
+        });
+        return { run: created, stopReason: 'fixture' };
+      },
+    } as any);
+
+    await expect(core.advanceRun(agentId, { wake: firstWake, run_id: expectedRunId })).resolves.toMatchObject({
+      run: { run_id: expectedRunId, phase: 'completed' },
+    });
+    expect(advances[0]).toMatchObject({ agentId, fencingToken: 1 });
+    expect(advances[0].runId).toBeUndefined();
+
+    await expect(core.advanceRun(agentId, { wake: firstWake, run_id: 'arcp:run:forged' }))
+      .rejects.toMatchObject({ code: 'invalid_wake' });
+  });
+
   it('owns run lookup/advance fencing and Phase 4 governance mutations for one Agent', async () => {
     const store = new InMemoryRunStateStore();
     await store.createRunIfAbsent(run());
