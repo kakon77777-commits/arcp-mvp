@@ -1,0 +1,9 @@
+{
+  "temporal_evidence": {
+    "provider": "ctcl-rest",
+    "base_url": "https://commoninstant.org",
+    "verify_attestation": true,
+    "degraded_local_fallback": "policy-controlled",
+    "use_for_lease_clock": false
+  }
+}

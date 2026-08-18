@@ -41,6 +41,12 @@ importers:
       '@arcp/schema':
         specifier: workspace:*
         version: link:packages/arcp-schema
+      '@arcp/temporal-evidence':
+        specifier: workspace:*
+        version: link:packages/temporal-evidence
+      '@arcp/temporal-wake':
+        specifier: workspace:*
+        version: link:packages/temporal-wake
       '@types/node':
         specifier: ^24
         version: 24.13.3
@@ -71,6 +77,9 @@ importers:
       '@arcp/schema':
         specifier: workspace:*
         version: link:../../arcp-schema
+      '@arcp/temporal-evidence':
+        specifier: workspace:*
+        version: link:../../temporal-evidence
 
   packages/adapters/google-drive-api:
     dependencies:
@@ -117,6 +126,21 @@ importers:
         version: link:../residence-storage
 
   packages/residence-storage: {}
+
+  packages/temporal-evidence:
+    dependencies:
+      '@arcp/schema':
+        specifier: workspace:*
+        version: link:../arcp-schema
+
+  packages/temporal-wake:
+    dependencies:
+      '@arcp/schema':
+        specifier: workspace:*
+        version: link:../arcp-schema
+      '@arcp/temporal-evidence':
+        specifier: workspace:*
+        version: link:../temporal-evidence
 
 packages:
 

@@ -24,13 +24,22 @@ export interface SourceQuality {
   source_class: string;
   precision: string;
   estimated_uncertainty_ns?: number;
+  synchronized?: boolean;
 }
 
 export interface InstantRef {
   instant_id: string;
-  timescale?: 'utc';
-  encoding?: 'unix_ms' | 'unix_ns';
+  timescale?: 'utc' | 'posix';
+  encoding?: 'unix_s' | 'unix_ms' | 'unix_us' | 'unix_ns' | 'rfc3339';
+  value?: string;
   source_quality?: SourceQuality;
+  attestation?: {
+    alg: string;
+    key_id: string;
+    signed_fields: string;
+    value: string;
+    verified?: boolean;
+  };
   unverified?: boolean;
 }
 
@@ -82,6 +91,8 @@ export interface WakeRecord {
   budget_ref?: string;
   not_before?: string;
   expires_at?: string;
+  not_before_instant?: InstantRef;
+  expires_at_instant?: InstantRef;
   revalidate_on_wake: boolean;
   idempotency_key: string;
 }
@@ -142,5 +153,6 @@ export interface ResidenceManifest {
   root_hash: string;
   policy_version: number;
   lease_fencing_token: number;
+  commit_instant?: InstantRef;
   status: 'active' | 'suspended';
 }

@@ -1,5 +1,5 @@
 import { computeRootHash } from '@arcp/schema';
-import type { ActionIntent, EventEnvelope, ObjectVersion, ResidenceManifest, WakeRecord } from '@arcp/schema';
+import type { ActionIntent, EventEnvelope, InstantRef, ObjectVersion, ResidenceManifest, WakeRecord } from '@arcp/schema';
 import { InMemoryResidenceStore } from './in-memory-store.js';
 import { LeaseManager } from './lease.js';
 import type { AgentState } from './state-machine.js';
@@ -19,6 +19,8 @@ export interface AgentTurnInput {
   actions: ActionIntent[];
   /** Injectable clock for deterministic tests; defaults to Date.now(). */
   now?: number;
+  /** Caller-supplied temporal provenance for the commit; never used as the lease clock. */
+  commitInstant?: InstantRef;
 }
 
 export interface AgentCoordinatorOptions {
@@ -111,6 +113,9 @@ export class AgentCoordinator {
         root_hash: rootHash,
         policy_version: this.policyVersion,
         lease_fencing_token: lease.fencing_token,
+        ...(input.commitInstant === undefined
+          ? {}
+          : { commit_instant: structuredClone(input.commitInstant) }),
         status: 'active',
       };
 
