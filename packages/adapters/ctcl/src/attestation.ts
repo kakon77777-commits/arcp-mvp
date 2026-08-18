@@ -79,6 +79,15 @@ export async function verifyTemporalEvidenceAttestation(
     throw attestationError('CTCL Ed25519 public key could not be imported', error);
   }
 
+  // instant_id and canonicalUnixNs are pipe-joined into the signed payload below.
+  // Neither is charset-restricted upstream, so a value containing '|' could shift
+  // the field boundaries and let one signed triple be reinterpreted as another
+  // (e.g. instant_id "A|123" + canonicalUnixNs "456" collides with instant_id "A"
+  // + canonicalUnixNs "123|456"). Reject rather than silently canonicalize.
+  if (evidence.instant.instant_id.includes('|') || evidence.canonicalUnixNs.includes('|')) {
+    throw attestationError('CTCL attestation fields must not contain the "|" payload delimiter');
+  }
+
   const payload = `${evidence.instant.instant_id}|${evidence.canonicalUnixNs}|${evidence.instant.timescale ?? 'utc'}`;
   const signature = decodeBase64(attestation.value);
   let verified: boolean;

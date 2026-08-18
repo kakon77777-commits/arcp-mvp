@@ -142,6 +142,58 @@ describe('CTCL Ed25519 attestation', () => {
     }
   });
 
+  it('rejects instant_id/unix_ns fields containing the "|" payload delimiter, even when the joined payload verifies', async () => {
+    const generated = (await crypto.subtle.generateKey(
+      { name: 'Ed25519' },
+      true,
+      ['sign', 'verify'],
+    )) as unknown as webcrypto.CryptoKeyPair;
+    const publicJwk = await crypto.subtle.exportKey('jwk', generated.publicKey);
+
+    // "A|123" + "456" and "A" + "123|456" both join to the identical payload
+    // "A|123|456|utc" -- a single real signature over that string would
+    // otherwise verify for either (instant_id, canonicalUnixNs) pair.
+    const sharedPayload = 'A|123|456|utc';
+    const signature = await crypto.subtle.sign(
+      { name: 'Ed25519' },
+      generated.privateKey,
+      new TextEncoder().encode(sharedPayload),
+    );
+    const encoded = Buffer.from(new Uint8Array(signature)).toString('base64');
+
+    function makeCollisionEvidence(instantId: string, canonicalUnixNs: string): TemporalEvidence {
+      const attestation = {
+        alg: 'Ed25519' as const,
+        keyId: 'ctcl-ed25519-test',
+        signedFields: 'instant_id|unix_ns|timescale',
+        value: encoded,
+      };
+      return {
+        instant: {
+          instant_id: instantId,
+          timescale: 'utc',
+          encoding: 'unix_ns',
+          value: canonicalUnixNs,
+          source_quality: { source_class: 'edge_wall_clock', precision: 'millisecond_representation' },
+          attestation: {
+            alg: attestation.alg,
+            key_id: attestation.keyId,
+            signed_fields: attestation.signedFields,
+            value: attestation.value,
+          },
+        },
+        canonicalUnixNs,
+        sourceQuality: { sourceClass: 'edge_wall_clock', precision: 'millisecond_representation' },
+        attestation,
+        verification: 'provider-asserted',
+      };
+    }
+
+    const adapter = new CtclRestTemporalAdapter();
+    await expectAttestationInvalid(adapter.verifyEvidence(makeCollisionEvidence('A|123', '456'), publicJwk));
+    await expectAttestationInvalid(adapter.verifyEvidence(makeCollisionEvidence('A', '123|456'), publicJwk));
+  });
+
   it('rejects missing attestation instead of treating provider assertion as verified', async () => {
     const { evidence, publicJwk } = await makeSignedEvidence();
     const adapter = new CtclRestTemporalAdapter();
