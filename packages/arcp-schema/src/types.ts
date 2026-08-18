@@ -235,7 +235,12 @@ export interface RunCheckpoint {
   context_hash?: string;
   pending_model_invocation_id?: string;
   pending_action_id?: string;
+  /** Exact structured proposal persisted so resume never needs to ask the model to recreate it. */
+  pending_action?: ActionIntent;
+  pending_action_hash?: string;
+  pending_authority_resolution_id?: string;
   pending_approval_request_id?: string;
+  pending_model_stop_reason?: string;
   created_at: InstantRef;
 }
 
