@@ -7,5 +7,6 @@ export * from './hashing.js';
 export * from './execution-ledger.js';
 export * from './in-memory-store.js';
 export * from './authority.js';
+export * from './approvals.js';
 export * from './containment.js';
 export * from './orchestrator.js';
