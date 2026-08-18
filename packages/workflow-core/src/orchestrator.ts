@@ -188,6 +188,7 @@ export class BoundedRunOrchestrator {
     }
 
     const context = await this.hydrateRun(run, input);
+    run = (await this.options.store.getRun(run.run_id)) ?? run;
     const latestCheckpoint = await this.options.store.getLatestCheckpoint(run.run_id);
     if (input.runId !== undefined && latestCheckpoint?.pending_action) {
       return this.resumePendingAction(run, latestCheckpoint, context, input.wake);
