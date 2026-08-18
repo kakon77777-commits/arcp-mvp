@@ -1,18 +1,26 @@
 import { contentHash } from '@arcp/schema';
 import type {
   ActionIntent,
+  ActionReceipt,
   AuthorityResolution,
   InstantRef,
   ModelInvocationRecord,
   PolicyInput,
+  PolicyResult,
+  RunCheckpoint,
   RunRecord,
   WakeRecord,
 } from '@arcp/schema';
+import { createApprovalRequest, evaluateApprovalSatisfaction } from './approvals.js';
 import { compareRisk } from './budget.js';
+import { evaluateContainment } from './containment.js';
 import { WorkflowError } from './errors.js';
-import { computeActionHash } from './hashing.js';
+import { recoverExecutionDecision } from './execution-ledger.js';
+import { computeActionHash, computeApprovalBindingHash } from './hashing.js';
 import type {
   ActionAuthorityResolverPort,
+  ActionExecutorPort,
+  CommitPort,
   ContextHydratorPort,
   ModelPort,
   PolicyPort,
@@ -21,7 +29,11 @@ import type {
   WakeAuthorityResolverPort,
 } from './ports.js';
 import { assertRunPhaseTransition } from './state-machine.js';
-import type { BoundedRunAdvanceResult } from './types.js';
+import type {
+  ActionExecutionResult,
+  BoundedRunAdvanceResult,
+  HydratedRunContext,
+} from './types.js';
 
 export interface BoundedRunOrchestratorOptions {
   store: RunStateStorePort;
@@ -31,6 +43,9 @@ export interface BoundedRunOrchestratorOptions {
   actionAuthority: ActionAuthorityResolverPort;
   policy: PolicyPort;
   budgetProvider: RunBudgetProviderPort;
+  executor?: ActionExecutorPort;
+  commit?: CommitPort;
+  defaultApprovalParties?: string[];
   now: () => InstantRef;
 }
 
@@ -38,6 +53,8 @@ export interface AdvanceBoundedRunInput {
   agentId: string;
   wake: WakeRecord;
   fencingToken: number;
+  /** Resume an existing run from a separately-authorized wake/event. */
+  runId?: string;
 }
 
 function compactHash(prefix: string, value: unknown): string {
@@ -67,9 +84,45 @@ function deniedForRisk(runId: string, action: ActionIntent, actionHash: string):
     relation_refs: [...(action.relation_refs ?? [])],
     contract_refs: [...(action.contract_refs ?? [])],
     revocable: true,
-    continuity_precondition: action.continuity_impact === 'migration-required' || action.continuity_impact === 'continuity-destructive'
-      ? 'separate-governance'
-      : 'none',
+    continuity_precondition:
+      action.continuity_impact === 'migration-required' || action.continuity_impact === 'continuity-destructive'
+        ? 'separate-governance'
+        : 'none',
+  };
+}
+
+function approvalExpiry(actionHash: string, wake: WakeRecord, authority: AuthorityResolution): InstantRef {
+  if (wake.expires_at_instant) return structuredClone(wake.expires_at_instant);
+  if (authority.expires_at) return structuredClone(authority.expires_at);
+  return {
+    instant_id: compactHash('local:unverified:approval-expiry:', { actionHash, wake: wake.idempotency_key }),
+    unverified: true,
+  };
+}
+
+function resultToReceipt(
+  runId: string,
+  executionId: string,
+  action: ActionIntent,
+  executorId: string,
+  result: ActionExecutionResult,
+  observedAt: InstantRef,
+  suffix = 'result',
+): ActionReceipt {
+  return {
+    schema: 'arcp/action-receipt/0.1',
+    receipt_id: compactHash('arcp:receipt:', { executionId, suffix, status: result.status, result }),
+    execution_id: executionId,
+    run_id: runId,
+    action_id: action.action_id,
+    status: result.status,
+    executor_id: executorId,
+    ...(result.providerOperationId === undefined ? {} : { provider_operation_id: result.providerOperationId }),
+    ...(result.externalRef === undefined ? {} : { external_ref: result.externalRef }),
+    ...(result.resultHash === undefined ? {} : { result_hash: result.resultHash }),
+    ...(result.errorCode === undefined ? {} : { error_code: result.errorCode }),
+    ...(result.redactedSummary === undefined ? {} : { redacted_summary: result.redactedSummary }),
+    observed_at: structuredClone(observedAt),
   };
 }
 
@@ -89,10 +142,24 @@ export class BoundedRunOrchestrator {
       throw new WorkflowError('wake_authority_denied', wakeAuthority.reason, false);
     }
 
-    const runId = deriveRunId(input.agentId, input.wake.idempotency_key);
-    const existing = await this.options.store.getRun(runId);
+    const runId = input.runId ?? deriveRunId(input.agentId, input.wake.idempotency_key);
+    let existing = await this.options.store.getRun(runId);
+    if (input.runId !== undefined && existing === null) {
+      throw new WorkflowError('invalid_wake', `resume run not found: ${input.runId}`, false);
+    }
     if (existing && (existing.phase === 'completed' || existing.phase === 'dead-lettered' || existing.phase === 'failed')) {
       return { run: existing, stopReason: existing.stop_reason };
+    }
+
+    if (existing && existing.fencing_token !== input.fencingToken) {
+      if (input.runId === undefined || !['waiting-approval', 'waiting', 'contained'].includes(existing.phase)) {
+        throw new WorkflowError('stale_fencing_token', `run ${runId} is owned by fencing token ${existing.fencing_token}`, false);
+      }
+      existing = await this.options.store.updateRun({
+        ...existing,
+        fencing_token: input.fencingToken,
+        updated_at: this.options.now(),
+      }, existing.fencing_token);
     }
 
     const budget = existing?.budget_spec ?? await this.options.budgetProvider.resolveBudget(
@@ -117,37 +184,13 @@ export class BoundedRunOrchestrator {
     });
 
     if (run.fencing_token !== input.fencingToken) {
-      // Resume/fresh-host integration will explicitly rotate this token. Until
-      // then, never let a caller advance a run using a token it does not own.
       throw new WorkflowError('stale_fencing_token', `run ${run.run_id} is owned by fencing token ${run.fencing_token}`, false);
     }
 
-    if (run.phase === 'accepted') run = await this.transition(run, 'hydrating');
-    const context = await this.options.hydrator.hydrate({
-      agentId: input.agentId,
-      runId: run.run_id,
-      wake: input.wake,
-    });
-
-    if (run.phase === 'hydrating') {
-      run = await this.transition(run, 'deliberating');
-      const checkpointSequence = run.checkpoint_sequence + 1;
-      await this.options.store.saveCheckpoint({
-        schema: 'arcp/run-checkpoint/0.1',
-        checkpoint_id: compactHash('arcp:checkpoint:', { runId: run.run_id, checkpointSequence }),
-        run_id: run.run_id,
-        sequence: checkpointSequence,
-        phase: run.phase,
-        base_manifest_version: context.baseManifestVersion,
-        fencing_token: run.fencing_token,
-        context_hash: context.contextHash,
-        created_at: this.options.now(),
-      });
-      run = await this.options.store.updateRun({
-        ...run,
-        checkpoint_sequence: checkpointSequence,
-        updated_at: this.options.now(),
-      }, run.fencing_token);
+    const context = await this.hydrateRun(run, input);
+    const latestCheckpoint = await this.options.store.getLatestCheckpoint(run.run_id);
+    if (input.runId !== undefined && latestCheckpoint?.pending_action) {
+      return this.resumePendingAction(run, latestCheckpoint, context, input.wake);
     }
 
     const priorDenials = (await this.options.store.getAuthorityResolutions(run.run_id))
@@ -193,11 +236,9 @@ export class BoundedRunOrchestrator {
           observed_at: this.options.now(),
         };
         await this.options.store.appendModelInvocation(invocation);
-        if (!ambiguous) {
-          await this.options.store.settleModelBudget(run.run_id, turnReservationId, 1);
-        }
+        if (!ambiguous) await this.options.store.settleModelBudget(run.run_id, turnReservationId, 1);
         throw new WorkflowError(
-          ambiguous ? 'model_temporarily_unavailable' : 'model_temporarily_unavailable',
+          'model_temporarily_unavailable',
           error instanceof Error ? error.message : 'model invocation failed',
           !ambiguous,
           error instanceof Error ? { cause: error } : undefined,
@@ -230,59 +271,13 @@ export class BoundedRunOrchestrator {
 
       this.validateProposal(proposal.actionIntents);
 
-      for (const action of proposal.actionIntents) {
-        run = await this.transition(run, 'authorizing');
-        const actionHash = computeActionHash(action);
-        const authority = compareRisk(action.risk, run.budget_spec.max_risk) > 0
-          ? deniedForRisk(run.run_id, action, actionHash)
-          : await this.options.actionAuthority.resolveAction({
-              runId: run.run_id,
-              action,
-              actionHash,
-            });
-        await this.options.store.appendAuthorityResolution(authority);
-
-        if (authority.status === 'denied') {
-          priorDenials.push(authority);
-          run = await this.transition(run, 'deliberating');
-          continue;
-        }
-
-        const policyInput: PolicyInput = {
-          actor: action.actor,
-          intent: action.intent,
-          target: action.target,
-          sensitivity: action.sensitivity,
-          risk: action.risk,
-          reversibility: action.reversibility,
-          requested_scopes: action.requested_scopes,
-          lease_fencing_token: run.fencing_token,
-          budget: { remaining: run.budget_spec.max_external_actions, unit: 'external-actions' },
-          policy_version: 1,
-        };
-        const policy = this.options.policy.evaluate(policyInput);
-
-        if (policy.decision === 'deny') {
-          priorDenials.push({ ...authority, status: 'denied' });
-          run = await this.transition(run, 'deliberating');
-          continue;
-        }
-        if (policy.decision === 'request-approval' || policy.decision === 'require-multi-party') {
-          run = await this.transition(run, 'waiting-approval', 'approval-required');
-          return { run, stopReason: run.stop_reason };
-        }
-        if (policy.decision === 'delay') {
-          run = await this.transition(run, 'waiting', 'policy-delay');
-          return { run, stopReason: run.stop_reason };
-        }
-
-        // 4B intentionally stops at the external-effect boundary. 4C injects
-        // ActionExecutorPort and turns this authorized plan into a durable claim.
-        throw new WorkflowError(
-          'execution_failed',
-          `authorized action ${action.action_id} reached the Phase 4B execution boundary`,
-          false,
-        );
+      for (let index = 0; index < proposal.actionIntents.length; index += 1) {
+        const action = proposal.actionIntents[index]!;
+        const actionStopReason = index === proposal.actionIntents.length - 1 ? proposal.stopReason : undefined;
+        const outcome = await this.processFreshAction(run, action, context, input.wake, actionStopReason);
+        run = outcome.run;
+        if (outcome.terminal) return outcome.result!;
+        if (outcome.denial) priorDenials.push(outcome.denial);
       }
 
       if (proposal.stopReason !== undefined) {
@@ -293,6 +288,442 @@ export class BoundedRunOrchestrator {
 
     run = await this.transition(run, 'completed', 'budget-exhausted:max-turns');
     return { run, stopReason: run.stop_reason };
+  }
+
+  private async hydrateRun(run: RunRecord, input: AdvanceBoundedRunInput): Promise<HydratedRunContext> {
+    if (run.phase === 'accepted') run = await this.transition(run, 'hydrating');
+    const context = await this.options.hydrator.hydrate({
+      agentId: input.agentId,
+      runId: run.run_id,
+      wake: input.wake,
+    });
+
+    const current = await this.options.store.getRun(run.run_id);
+    if (current?.phase === 'hydrating') {
+      const deliberating = await this.transition(current, 'deliberating');
+      const sequence = deliberating.checkpoint_sequence + 1;
+      await this.options.store.saveCheckpoint({
+        schema: 'arcp/run-checkpoint/0.1',
+        checkpoint_id: compactHash('arcp:checkpoint:', { runId: run.run_id, sequence }),
+        run_id: run.run_id,
+        sequence,
+        phase: deliberating.phase,
+        base_manifest_version: context.baseManifestVersion,
+        fencing_token: deliberating.fencing_token,
+        context_hash: context.contextHash,
+        created_at: this.options.now(),
+      });
+      await this.options.store.updateRun({
+        ...deliberating,
+        checkpoint_sequence: sequence,
+        updated_at: this.options.now(),
+      }, deliberating.fencing_token);
+    }
+    return context;
+  }
+
+  private async processFreshAction(
+    run: RunRecord,
+    action: ActionIntent,
+    context: HydratedRunContext,
+    wake: WakeRecord,
+    stopReason?: string,
+  ): Promise<{ run: RunRecord; terminal: boolean; denial?: AuthorityResolution; result?: BoundedRunAdvanceResult }> {
+    run = await this.transition(run, 'authorizing');
+    const actionHash = computeActionHash(action);
+    const authority = await this.resolveAuthority(run, action, actionHash);
+
+    if (authority.status === 'denied') {
+      const next = await this.transition(run, 'deliberating');
+      return { run: next, terminal: false, denial: authority };
+    }
+
+    const policy = this.evaluatePolicy(run, action, false);
+    if (policy.decision === 'deny') {
+      const denial: AuthorityResolution = { ...authority, status: 'denied' };
+      const next = await this.transition(run, 'deliberating');
+      return { run: next, terminal: false, denial };
+    }
+
+    if (policy.decision === 'request-approval' || policy.decision === 'require-multi-party') {
+      const parties = [...new Set(this.options.defaultApprovalParties ?? [])];
+      if (parties.length === 0) {
+        throw new WorkflowError('approval_invalid', 'approval-required action has no configured approval parties', false);
+      }
+      const expiresAt = approvalExpiry(actionHash, wake, authority);
+      const request = createApprovalRequest({
+        runId: run.run_id,
+        actionId: action.action_id,
+        actionHash,
+        authority,
+        policyVersion: policy.policy_version,
+        requiredParties: parties,
+        requestedScope: action.requested_scopes,
+        bindingResourceScope: authority.resource_scope,
+        createdAt: this.options.now(),
+        expiresAt,
+      });
+      await this.options.store.createApprovalRequest(request);
+      run = await this.savePendingCheckpoint(run, context, action, actionHash, authority, stopReason, request.approval_request_id);
+      run = await this.transition(run, 'waiting-approval', 'approval-required');
+      return {
+        run,
+        terminal: true,
+        result: { run, stopReason: run.stop_reason, pendingApprovalRequestId: request.approval_request_id },
+      };
+    }
+
+    if (policy.decision === 'delay') {
+      run = await this.savePendingCheckpoint(run, context, action, actionHash, authority, stopReason);
+      run = await this.transition(run, 'waiting', 'policy-delay');
+      return { run, terminal: true, result: { run, stopReason: run.stop_reason } };
+    }
+
+    run = await this.savePendingCheckpoint(run, context, action, actionHash, authority, stopReason);
+    const result = await this.executeAuthorizedAction(run, action, actionHash, authority, policy, context, wake, stopReason);
+    return { run: result.run, terminal: result.run.phase !== 'deliberating', result: result.run.phase !== 'deliberating' ? result : undefined };
+  }
+
+  private async resumePendingAction(
+    run: RunRecord,
+    checkpoint: RunCheckpoint,
+    context: HydratedRunContext,
+    wake: WakeRecord,
+  ): Promise<BoundedRunAdvanceResult> {
+    const action = checkpoint.pending_action;
+    const actionHash = checkpoint.pending_action_hash;
+    if (!action || !actionHash) {
+      throw new WorkflowError('invalid_persisted_state', `run ${run.run_id} has no resumable pending action`, false);
+    }
+
+    let approvalValid = false;
+    if (run.phase === 'waiting-approval') {
+      const requestId = checkpoint.pending_approval_request_id;
+      if (!requestId) throw new WorkflowError('invalid_persisted_state', 'waiting-approval checkpoint lacks request id', false);
+      const request = await this.options.store.getApprovalRequest(requestId);
+      if (!request) throw new WorkflowError('approval_invalid', `approval request not found: ${requestId}`, false);
+      const grants = await this.options.store.getApprovalGrants(requestId);
+      const satisfaction = evaluateApprovalSatisfaction(request, grants, this.options.now());
+      if (!satisfaction.satisfied) {
+        return { run, stopReason: run.stop_reason, pendingApprovalRequestId: requestId };
+      }
+
+      run = await this.transition(run, 'authorizing');
+      const authority = await this.resolveAuthority(run, action, actionHash);
+      const authorityHash = contentHash(authority);
+      const bindingHash = computeApprovalBindingHash({
+        actionHash,
+        authorityResolutionHash: authorityHash,
+        policyVersion: request.policy_version,
+        resourceScope: authority.resource_scope,
+        expiresAt: request.expires_at,
+        requiredParties: request.required_parties,
+      });
+      if (authorityHash !== request.authority_resolution_hash || bindingHash !== request.binding_hash) {
+        throw new WorkflowError('approval_invalid', 'approval no longer binds to the current authority/action scope', false);
+      }
+      const policy = this.evaluatePolicy(run, action, true);
+      if (policy.decision !== 'allow' && policy.decision !== 'allow-with-log') {
+        throw new WorkflowError('approval_invalid', `approved action no longer passes current policy: ${policy.decision}`, false);
+      }
+      approvalValid = true;
+      return this.executeAuthorizedAction(
+        run, action, actionHash, authority, policy, context, wake, checkpoint.pending_model_stop_reason,
+      );
+    }
+
+    const authority = await this.resolveAuthority(run, action, actionHash);
+    const policy = this.evaluatePolicy(run, action, approvalValid);
+    if (authority.status === 'denied' || policy.decision === 'deny') {
+      throw new WorkflowError('action_authority_denied', 'pending action no longer has authority', false);
+    }
+    return this.executeAuthorizedAction(
+      run, action, actionHash, authority, policy, context, wake, checkpoint.pending_model_stop_reason,
+    );
+  }
+
+  private async executeAuthorizedAction(
+    run: RunRecord,
+    action: ActionIntent,
+    actionHash: string,
+    authority: AuthorityResolution,
+    policy: PolicyResult,
+    context: HydratedRunContext,
+    wake: WakeRecord,
+    stopReason?: string,
+  ): Promise<BoundedRunAdvanceResult> {
+    const executor = this.options.executor;
+    const commit = this.options.commit;
+    if (!executor || !commit) {
+      throw new WorkflowError('execution_failed', `authorized action ${action.action_id} has no Phase 4 executor/commit port`, false);
+    }
+
+    const containments = await this.options.store.activeContainments(run.agent_id);
+    const blocked = action.requested_scopes.some((scope) =>
+      evaluateContainment(containments, `external-action:${scope}`).blocked,
+    );
+    if (blocked) {
+      if (run.phase !== 'contained') run = await this.transition(run, 'contained', 'containment-active');
+      return { run, stopReason: run.stop_reason };
+    }
+
+    const descriptor = executor.descriptor();
+    const executionId = compactHash('arcp:execution:', { runId: run.run_id, actionHash });
+    const providerIdempotencyKey = descriptor.idempotencyMode === 'provider-enforced'
+      ? action.idempotency_key
+      : undefined;
+    let execution = await this.options.store.getActionExecution(executionId);
+    if (!execution) {
+      execution = await this.options.store.reserveBudgetAndClaimAction({
+        runId: run.run_id,
+        fencingToken: run.fencing_token,
+        executionId,
+        actionId: action.action_id,
+        actionHash,
+        actionIdempotencyKey: action.idempotency_key,
+        executorId: descriptor.executorId,
+        providerIdempotencyMode: descriptor.idempotencyMode,
+        ...(providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey }),
+        reservationId: `budget:external-action:${executionId}`,
+        budgetDimension: 'external_actions',
+        budgetAmount: 1,
+        claimedAt: this.options.now(),
+      });
+    }
+
+    const recovery = recoverExecutionDecision(execution);
+    if (recovery === 'done') {
+      return this.finishAfterCanonicalAction(run, stopReason);
+    }
+    if (recovery === 'commit-only') {
+      return this.commitRecordedEffect(run, execution.execution_id, authority, policy, context, wake, stopReason);
+    }
+    if (recovery === 'reconcile' || recovery === 'safe-provider-retry-or-reconcile') {
+      if (run.phase === 'executing') run = await this.transition(run, 'reconciling');
+      else if (run.phase !== 'reconciling') {
+        throw new WorkflowError('invalid_persisted_state', `cannot reconcile execution from run phase ${run.phase}`, false);
+      }
+      const reconciled = await executor.reconcile({
+        runId: run.run_id,
+        executionId,
+        action,
+        ...(providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey }),
+      });
+      if (reconciled.status === 'still-unknown') {
+        const receipt = resultToReceipt(run.run_id, executionId, action, descriptor.executorId, {
+          status: 'unknown',
+          errorCode: reconciled.errorCode ?? 'reconciliation-still-unknown',
+          redactedSummary: reconciled.redactedSummary,
+        }, this.options.now(), 'reconcile-unknown');
+        await this.options.store.appendActionReceipt(receipt);
+        await this.options.store.markActionReconciled(executionId, 'unknown');
+        await this.options.store.appendDeadLetter({
+          schema: 'arcp/dead-letter/0.1',
+          dead_letter_id: compactHash('arcp:dead-letter:', { executionId, kind: 'unknown-effect' }),
+          run_id: run.run_id,
+          action_id: action.action_id,
+          stage: 'reconciliation',
+          attempts: execution.attempt,
+          last_error_code: 'execution_unknown',
+          effect_state: 'unknown',
+          manual_resolution_required: true,
+          created_at: this.options.now(),
+        });
+        run = await this.transition(run, 'dead-lettered', 'execution-effect-unknown');
+        return { run, stopReason: run.stop_reason };
+      }
+      const status = reconciled.status === 'confirmed-succeeded'
+        ? 'succeeded'
+        : reconciled.status === 'confirmed-failed'
+          ? 'failed'
+          : 'partial';
+      const receipt = resultToReceipt(run.run_id, executionId, action, descriptor.executorId, {
+        status,
+        providerOperationId: reconciled.providerOperationId,
+        externalRef: reconciled.externalRef,
+        resultHash: reconciled.resultHash,
+        errorCode: reconciled.errorCode,
+        redactedSummary: reconciled.redactedSummary,
+      }, this.options.now(), 'reconciled');
+      await this.options.store.appendActionReceipt(receipt);
+      await this.options.store.markActionReconciled(executionId, status);
+      return this.commitRecordedEffect(run, executionId, authority, policy, context, wake, stopReason);
+    }
+
+    if (run.phase === 'authorizing') run = await this.transition(run, 'executing');
+    else if (run.phase !== 'executing') {
+      throw new WorkflowError('invalid_persisted_state', `cannot execute action from run phase ${run.phase}`, false);
+    }
+    execution = await this.options.store.markActionExecuting(executionId, run.fencing_token, this.options.now());
+
+    // Deliberately do not catch executor exceptions here. If a process/provider
+    // fails after the durable `executing` boundary, the unchanged execution
+    // record is the recovery signal. The next advance reconciles instead of
+    // blindly calling execute again.
+    const result = await executor.execute({
+      runId: run.run_id,
+      executionId,
+      authorization: {
+        action,
+        actionHash,
+        authority,
+        policy,
+        grantedScope: [...authority.resource_scope],
+      },
+      ...(providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey }),
+    });
+
+    if (result.status === 'unknown') {
+      run = await this.transition(run, 'reconciling');
+      const reconciled = await executor.reconcile({
+        runId: run.run_id,
+        executionId,
+        action,
+        providerOperationId: result.providerOperationId,
+        ...(providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey }),
+      });
+      if (reconciled.status === 'still-unknown') {
+        const unknownReceipt = resultToReceipt(run.run_id, executionId, action, descriptor.executorId, result, this.options.now());
+        await this.options.store.appendActionReceipt(unknownReceipt);
+        await this.options.store.markActionReconciled(executionId, 'unknown');
+        await this.options.store.appendDeadLetter({
+          schema: 'arcp/dead-letter/0.1',
+          dead_letter_id: compactHash('arcp:dead-letter:', { executionId, kind: 'unknown-effect' }),
+          run_id: run.run_id,
+          action_id: action.action_id,
+          stage: 'reconciliation',
+          attempts: execution.attempt,
+          last_error_code: 'execution_unknown',
+          effect_state: 'unknown',
+          manual_resolution_required: true,
+          created_at: this.options.now(),
+        });
+        run = await this.transition(run, 'dead-lettered', 'execution-effect-unknown');
+        return { run, stopReason: run.stop_reason };
+      }
+      const status = reconciled.status === 'confirmed-succeeded'
+        ? 'succeeded'
+        : reconciled.status === 'confirmed-failed'
+          ? 'failed'
+          : 'partial';
+      const reconciledReceipt = resultToReceipt(run.run_id, executionId, action, descriptor.executorId, {
+        status,
+        providerOperationId: reconciled.providerOperationId,
+        externalRef: reconciled.externalRef,
+        resultHash: reconciled.resultHash,
+        errorCode: reconciled.errorCode,
+        redactedSummary: reconciled.redactedSummary,
+      }, this.options.now(), 'reconciled');
+      await this.options.store.appendActionReceipt(reconciledReceipt);
+      await this.options.store.markActionReconciled(executionId, status);
+      return this.commitRecordedEffect(run, executionId, authority, policy, context, wake, stopReason);
+    }
+
+    const receipt = resultToReceipt(run.run_id, executionId, action, descriptor.executorId, result, this.options.now());
+    await this.options.store.appendActionReceipt(receipt);
+    return this.commitRecordedEffect(run, executionId, authority, policy, context, wake, stopReason);
+  }
+
+  private async commitRecordedEffect(
+    run: RunRecord,
+    executionId: string,
+    authority: AuthorityResolution,
+    policy: PolicyResult,
+    context: HydratedRunContext,
+    wake: WakeRecord,
+    stopReason?: string,
+  ): Promise<BoundedRunAdvanceResult> {
+    const commit = this.options.commit;
+    if (!commit) throw new WorkflowError('commit_failed', 'no canonical CommitPort configured', false);
+    if (run.phase !== 'committing') run = await this.transition(run, 'committing');
+    const receipts = await this.options.store.getActionReceipts(run.run_id);
+    const authorities = await this.options.store.getAuthorityResolutions(run.run_id);
+    const manifest = await commit.commit({
+      run,
+      wake,
+      receipts,
+      authorityResolutions: authorities.length > 0 ? authorities : [authority],
+      policyResults: [policy],
+      expectedBaseManifestVersion: context.baseManifestVersion,
+      fencingToken: run.fencing_token,
+    });
+    await this.options.store.markActionCanonicallyRecorded(executionId);
+    const finished = await this.finishAfterCanonicalAction(run, stopReason);
+    return { ...finished, manifest };
+  }
+
+  private async finishAfterCanonicalAction(run: RunRecord, stopReason?: string): Promise<BoundedRunAdvanceResult> {
+    if (run.phase !== 'committing') {
+      if (run.phase === 'executing' || run.phase === 'reconciling') run = await this.transition(run, 'committing');
+      else if (run.phase !== 'completed') {
+        throw new WorkflowError('invalid_persisted_state', `cannot finish canonical action from phase ${run.phase}`, false);
+      }
+    }
+    if (run.phase === 'completed') return { run, stopReason: run.stop_reason };
+    if (stopReason !== undefined) {
+      run = await this.transition(run, 'completed', stopReason);
+      return { run, stopReason };
+    }
+    run = await this.transition(run, 'deliberating');
+    return { run };
+  }
+
+  private async resolveAuthority(run: RunRecord, action: ActionIntent, actionHash: string): Promise<AuthorityResolution> {
+    const authority = compareRisk(action.risk, run.budget_spec.max_risk) > 0
+      ? deniedForRisk(run.run_id, action, actionHash)
+      : await this.options.actionAuthority.resolveAction({ runId: run.run_id, action, actionHash });
+    await this.options.store.appendAuthorityResolution(authority);
+    return authority;
+  }
+
+  private evaluatePolicy(run: RunRecord, action: ActionIntent, hasValidApproval: boolean): PolicyResult {
+    const input: PolicyInput = {
+      actor: action.actor,
+      intent: action.intent,
+      target: action.target,
+      sensitivity: action.sensitivity,
+      risk: action.risk,
+      reversibility: action.reversibility,
+      requested_scopes: action.requested_scopes,
+      lease_fencing_token: run.fencing_token,
+      budget: { remaining: run.budget_spec.max_external_actions, unit: 'external-actions' },
+      policy_version: 1,
+    };
+    return this.options.policy.evaluate(input, { hasValidApproval });
+  }
+
+  private async savePendingCheckpoint(
+    run: RunRecord,
+    context: HydratedRunContext,
+    action: ActionIntent,
+    actionHash: string,
+    authority: AuthorityResolution,
+    stopReason?: string,
+    approvalRequestId?: string,
+  ): Promise<RunRecord> {
+    const sequence = run.checkpoint_sequence + 1;
+    await this.options.store.saveCheckpoint({
+      schema: 'arcp/run-checkpoint/0.1',
+      checkpoint_id: compactHash('arcp:checkpoint:', { runId: run.run_id, sequence, actionHash }),
+      run_id: run.run_id,
+      sequence,
+      phase: run.phase,
+      base_manifest_version: context.baseManifestVersion,
+      fencing_token: run.fencing_token,
+      context_hash: context.contextHash,
+      pending_action_id: action.action_id,
+      pending_action: structuredClone(action),
+      pending_action_hash: actionHash,
+      pending_authority_resolution_id: authority.resolution_id,
+      ...(approvalRequestId === undefined ? {} : { pending_approval_request_id: approvalRequestId }),
+      ...(stopReason === undefined ? {} : { pending_model_stop_reason: stopReason }),
+      created_at: this.options.now(),
+    });
+    return this.options.store.updateRun({
+      ...run,
+      checkpoint_sequence: sequence,
+      updated_at: this.options.now(),
+    }, run.fencing_token);
   }
 
   private async transition(run: RunRecord, phase: RunRecord['phase'], stopReason?: string): Promise<RunRecord> {
