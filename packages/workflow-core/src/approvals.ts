@@ -31,7 +31,10 @@ export interface CreateApprovalRequestInput {
   authority: AuthorityResolution;
   policyVersion: number;
   requiredParties: string[];
+  /** Human/agent grant verbs such as read/write/delete. */
   requestedScope: string[];
+  /** Fully qualified authority scope such as resource:report#write. */
+  bindingResourceScope: string[];
   createdAt: InstantRef;
   expiresAt: InstantRef;
 }
@@ -39,12 +42,13 @@ export interface CreateApprovalRequestInput {
 export function createApprovalRequest(input: CreateApprovalRequestInput): ApprovalRequest {
   const requiredParties = [...new Set(input.requiredParties)];
   const requestedScope = [...new Set(input.requestedScope)];
+  const bindingResourceScope = [...new Set(input.bindingResourceScope)];
   const authorityResolutionHash = contentHash(input.authority);
   const bindingHash = computeApprovalBindingHash({
     actionHash: input.actionHash,
     authorityResolutionHash,
     policyVersion: input.policyVersion,
-    resourceScope: requestedScope,
+    resourceScope: bindingResourceScope,
     expiresAt: input.expiresAt,
     requiredParties,
   });
