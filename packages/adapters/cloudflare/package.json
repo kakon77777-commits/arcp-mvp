@@ -14,6 +14,7 @@
   "dependencies": {
     "@arcp/schema": "workspace:*",
     "@arcp/policy-engine": "workspace:*",
-    "@arcp/control-plane-core": "workspace:*"
+    "@arcp/control-plane-core": "workspace:*",
+    "@arcp/workflow-core": "workspace:*"
   }
 }
