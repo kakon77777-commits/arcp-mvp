@@ -8,3 +8,4 @@ export * from './execution-ledger.js';
 export * from './in-memory-store.js';
 export * from './authority.js';
 export * from './containment.js';
+export * from './orchestrator.js';
