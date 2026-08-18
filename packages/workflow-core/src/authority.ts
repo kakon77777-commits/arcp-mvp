@@ -30,6 +30,22 @@ function resourceScope(resourceRefs: string[], scopes: string[]): string[] {
   return result;
 }
 
+function isContinuitySafe(precondition: ContinuityPrecondition | undefined): boolean {
+  return precondition === 'verified-replica' ||
+    precondition === 'checkpoint' ||
+    precondition === 'migration' ||
+    precondition === 'separate-governance';
+}
+
+function strongestContinuityPrecondition(grants: StaticAuthorityGrant[]): ContinuityPrecondition {
+  const values = grants.map((grant) => grant.continuityPrecondition ?? 'none');
+  if (values.includes('separate-governance')) return 'separate-governance';
+  if (values.includes('migration')) return 'migration';
+  if (values.includes('checkpoint')) return 'checkpoint';
+  if (values.includes('verified-replica')) return 'verified-replica';
+  return 'none';
+}
+
 export class StaticActionAuthorityResolver implements ActionAuthorityResolverPort {
   private readonly grants: StaticAuthorityGrant[];
 
@@ -40,37 +56,47 @@ export class StaticActionAuthorityResolver implements ActionAuthorityResolverPor
   async resolveAction(input: ActionAuthorityInput): Promise<AuthorityResolution> {
     const subject = input.action.subject_entity_ref ?? input.action.actor;
     const resources = input.action.resource_refs?.length
-      ? [...input.action.resource_refs]
+      ? [...new Set(input.action.resource_refs)]
       : [input.action.target];
-    const requested = input.action.requested_scopes;
-
-    const matching = this.grants.filter((grant) =>
-      grant.subjectEntityRef === subject &&
-      resources.includes(grant.resourceRef) &&
-      requested.every((scope) => grant.scopes.includes(scope)) &&
-      (grant.maxRisk === undefined || compareRisk(input.action.risk, grant.maxRisk) <= 0),
-    );
-
+    const requested = [...new Set(input.action.requested_scopes)];
     const destructive =
       input.action.continuity_impact === 'migration-required' ||
       input.action.continuity_impact === 'continuity-destructive';
 
-    let continuityPrecondition: ContinuityPrecondition | undefined;
-    let accepted = matching;
-    if (destructive) {
-      accepted = matching.filter((grant) =>
-        grant.continuityPrecondition === 'verified-replica' ||
-        grant.continuityPrecondition === 'checkpoint' ||
-        grant.continuityPrecondition === 'migration' ||
-        grant.continuityPrecondition === 'separate-governance',
-      );
-      continuityPrecondition = accepted[0]?.continuityPrecondition ?? 'separate-governance';
-    } else {
-      continuityPrecondition = matching[0]?.continuityPrecondition ?? 'none';
+    const eligible = this.grants.filter((grant) =>
+      grant.subjectEntityRef === subject &&
+      resources.includes(grant.resourceRef) &&
+      (grant.maxRisk === undefined || compareRisk(input.action.risk, grant.maxRisk) <= 0),
+    );
+
+    // Authority is conjunctive across every affected resource and requested
+    // scope. One grant for resource A must never authorize resource B merely
+    // because both resources appear in the same ActionIntent.
+    const covering: StaticAuthorityGrant[] = [];
+    let fullyCovered = true;
+    for (const resource of resources) {
+      const scopes = requested.length > 0 ? requested : [''];
+      for (const scope of scopes) {
+        let candidates = eligible.filter((grant) =>
+          grant.resourceRef === resource && (scope === '' || grant.scopes.includes(scope)),
+        );
+        if (destructive) {
+          candidates = candidates.filter((grant) => isContinuitySafe(grant.continuityPrecondition));
+        }
+        if (candidates.length === 0) {
+          fullyCovered = false;
+        } else {
+          covering.push(...candidates);
+        }
+      }
     }
 
+    const accepted = fullyCovered ? [...new Set(covering)] : [];
     const sources = [...new Set(accepted.map((grant) => grant.source))] as AuthoritySource[];
-    const status = accepted.length === 0 ? 'denied' : 'authorized';
+    const status: AuthorityResolution['status'] = accepted.length === 0 ? 'denied' : 'authorized';
+    const continuityPrecondition: ContinuityPrecondition = destructive
+      ? (accepted.length === 0 ? 'separate-governance' : strongestContinuityPrecondition(accepted))
+      : strongestContinuityPrecondition(accepted);
 
     return {
       schema: 'arcp/authority-resolution/0.1',
@@ -85,7 +111,7 @@ export class StaticActionAuthorityResolver implements ActionAuthorityResolverPor
       relation_refs: [...(input.action.relation_refs ?? [])],
       contract_refs: [...(input.action.contract_refs ?? [])],
       revocable: accepted.every((grant) => grant.revocable !== false),
-      ...(continuityPrecondition === undefined ? {} : { continuity_precondition: continuityPrecondition }),
+      continuity_precondition: continuityPrecondition,
     };
   }
 }
