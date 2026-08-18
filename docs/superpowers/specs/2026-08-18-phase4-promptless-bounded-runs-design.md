@@ -3,7 +3,7 @@
 **Status:** Proposed for Neo.K review  
 **Date:** 2026-08-18  
 **Phase:** 4 of ARCP-MVP  
-**Primary goal:** Add bounded, event-driven autonomous runs with explicit authority, durable effect accounting, approvals, containment, dead-letter/reconciliation, and provider-neutral model/action execution boundaries.  
+**Primary goal:** Add bounded, event-driven autonomous runs with explicit authority, durable effect accounting, approvals, containment, dead-letter/reconciliation, and provider-neutral model/action execution boundaries.
 
 ## 0. Normative inputs
 
@@ -43,14 +43,7 @@ wake compilation != wake execution
 
 # 1. Why Phase 4 exists
 
-Phase 0–3 established:
-
-- stable Agent identity and schema;
-- deterministic policy primitives;
-- canonical commit and fencing semantics;
-- provider-neutral Residence storage;
-- local/cloud reconciliation boundaries;
-- temporal provenance and exact wake-time compilation.
+Phase 0–3 established stable Agent identity, deterministic policy primitives, canonical commit/fencing semantics, provider-neutral Residence storage, reconciliation boundaries, and temporal provenance.
 
 Phase 4 is the first phase where a wake can cause a real autonomous run:
 
@@ -67,7 +60,7 @@ Wake
 
 This changes the failure model fundamentally.
 
-Before Phase 4, `ActionIntent` can be recorded without any external effect. In Phase 4, a process may crash after an external API accepted an operation but before ARCP committed the corresponding manifest. Therefore the old assumption:
+Before Phase 4, `ActionIntent` can be recorded without any external effect. In Phase 4, a process may crash after an external API accepted an operation but before ARCP committed the corresponding manifest. Therefore:
 
 ```text
 record action at final canonical commit
@@ -100,9 +93,9 @@ Phase 4 includes:
 - exact action-bound approvals;
 - durable action execution claims;
 - action receipts, unknown-effect handling, and reconciliation;
-- emergency containment with scope, TTL, review, renewal, and release/escalation semantics;
+- emergency containment with scope, TTL, review, renewal, release/escalation semantics;
 - waiting/resume without keeping a process alive;
-- dead-letter records for irrecoverable/retry-exhausted work;
+- dead-letter records for work that cannot safely progress automatically;
 - Cloudflare Durable Object / D1 integration;
 - deterministic, network-free CI;
 - an optional first live model Gate C that does not define architecture correctness.
@@ -125,8 +118,6 @@ Phase 4 does **not** include:
 
 # 3. Existing repository fit
 
-The current code already contains useful seams.
-
 ## 3.1 Existing `WakeRecord`
 
 `WakeRecord` already carries:
@@ -142,7 +133,7 @@ revalidate_on_wake
 idempotency_key
 ```
 
-Phase 4 will use these fields rather than inventing a parallel trigger format.
+Phase 4 uses these fields rather than inventing a parallel trigger format.
 
 ## 3.2 Existing `ActionIntent`
 
@@ -159,15 +150,13 @@ requested_scopes
 idempotency_key
 ```
 
-Phase 4 may add optional affected-entity/resource/residence references and continuity impact, but an `ActionIntent` remains only a proposal.
+Phase 4 may add optional affected-entity/resource/residence references and continuity impact, but `ActionIntent` remains only a proposal.
 
 It must never self-certify authority.
 
 ## 3.3 Existing policy engine
 
-The current policy engine is deterministic and provider-neutral. It knows risk, sensitivity, approvals, lease validity, budget, and policy version.
-
-Phase 4 keeps it deterministic and does not make it responsible for discovering relationships, contracts, provider capabilities, or infrastructure ownership.
+The current policy engine is deterministic and provider-neutral. Phase 4 keeps it deterministic and does not make it responsible for discovering relationships, contracts, provider capabilities, or infrastructure ownership.
 
 ## 3.4 Existing model adapter
 
@@ -191,78 +180,28 @@ Phase 4 extends these boundaries instead of moving model/network calls into the 
 
 ## A. Put everything inside `AgentDurableObjectCore`
 
-The Durable Object would:
+Advantage: very few files and minimal plumbing.
 
-- accept wakes;
-- call the model;
-- resolve authority;
-- wait for approvals;
-- execute tools;
-- track budgets;
-- write receipts;
-- commit manifests.
-
-### Advantage
-
-Very few files and minimal plumbing.
-
-### Rejection reason
-
-It creates one giant component coupling Cloudflare runtime, provider APIs, policy, approvals, budgets, action execution, and canonical commit semantics. It also makes deterministic testing and later Phase 5 MCP integration harder.
-
-Rejected.
-
----
+Rejected because it couples Cloudflare runtime, model APIs, policy, approvals, budgets, action execution, and canonical commit into one giant component.
 
 ## B. Provider-neutral `workflow-core` + durable effect ledger — selected
 
-Create a new `@arcp/workflow-core` package containing:
-
-- bounded-run orchestration;
-- run state machine;
-- budget semantics;
-- authority/model/executor/store ports;
-- approval and containment logic;
-- crash-safe recovery rules.
+Create `@arcp/workflow-core` containing bounded-run orchestration, state transitions, budget semantics, authority/model/executor/store ports, approvals, containment, and crash-safe recovery rules.
 
 Cloudflare/D1 implement persistence. Model and action providers implement ports. The coordinator remains the canonical state boundary.
 
-### Advantages
+Advantages:
 
 - clean provider isolation;
 - deterministic CI;
-- crash semantics can be tested without Cloudflare;
+- crash semantics testable without Cloudflare;
 - Phase 5 can attach MCP/adapter capability providers without changing orchestration;
 - model provider choice does not define Agent identity;
-- effect deduplication can be designed independently of manifest commit.
-
-Selected.
-
----
+- effect deduplication is independent of manifest commit.
 
 ## C. Fully event-choreographed Queue/Workflow architecture
 
-Each stage becomes a separate message/job:
-
-```text
-wake queue
-→ hydrate job
-→ model job
-→ authority job
-→ execution job
-→ reconcile job
-→ commit job
-```
-
-### Advantage
-
-Maximum horizontal scaling and fault isolation.
-
-### Rejection reason
-
-Too much operational complexity for the current single-Agent MVP. Phase 4 should establish correct semantics first. The chosen `workflow-core` interfaces leave room to map stages onto Cloudflare Workflows/Queues later.
-
-Deferred.
+Potentially useful later, but too much operational complexity for the current single-Agent MVP. Deferred until Phase 4 semantics are stable.
 
 ---
 
@@ -305,8 +244,6 @@ The canonical coordinator never imports a live model provider or tool provider.
 # 6. Package boundaries
 
 ## 6.1 New `@arcp/workflow-core`
-
-Proposed files:
 
 ```text
 packages/workflow-core/
@@ -364,29 +301,17 @@ All additions remain additive. Existing Phase 0–3 objects remain valid.
 
 ## 6.3 `@arcp/adapter-model`
 
-Evolves from `FakeModelAdapter` into implementations of the provider-neutral `ModelPort`.
+Evolves from `FakeModelAdapter` into implementations of provider-neutral `ModelPort`.
 
-The deterministic/fake implementation remains the merge-correctness provider.
-
-Live vendor adapters are activation-specific and must not be imported by `workflow-core`.
+The deterministic/fake implementation remains the merge-correctness provider. Live vendor adapters are activation-specific and must not be imported by `workflow-core`.
 
 ## 6.4 `@arcp/policy-engine`
 
-Remains deterministic.
-
-It receives already-resolved facts and returns a policy decision.
-
-It does not infer that an administrator owns an Entity merely because the administrator controls infrastructure.
+Remains deterministic. It receives already-resolved facts and returns a policy decision. It does not infer that an administrator owns an Entity merely because the administrator controls infrastructure.
 
 ## 6.5 `@arcp/adapter-cloudflare`
 
-Adds:
-
-- durable run-state storage backed by D1;
-- execution-ledger storage;
-- approval/containment persistence;
-- per-Agent run fencing/token issuance and resume routing;
-- internal control-plane routes required to advance/resume runs.
+Adds durable run-state storage, effect-ledger storage, approval/containment persistence, per-Agent run fencing/token issuance, and resume routing.
 
 Cloudflare remains an implementation of ports, not the source of governance semantics.
 
@@ -415,27 +340,70 @@ export type RunPhase =
   | 'failed';
 ```
 
-This is intentionally more detailed than the existing coarse Agent state machine.
+This is more detailed than the existing coarse Agent state machine. Agent state and Run phase are different abstractions.
 
-Agent state and Run phase are different abstractions.
-
-Example:
+Examples:
 
 ```text
 AgentState = Waiting
 RunPhase   = waiting-approval
 ```
 
-or:
-
 ```text
 AgentState = Suspended
 RunPhase   = contained
 ```
 
-## 7.2 `RunRecord`
+## 7.2 Exact legal `RunPhase` transitions
 
-Conceptual shape:
+The reference state machine uses this transition table:
+
+```text
+accepted
+  -> hydrating | contained | failed
+
+hydrating
+  -> deliberating | contained | failed
+
+deliberating
+  -> authorizing | committing | waiting | contained | completed | failed
+
+authorizing
+  -> deliberating | waiting-approval | executing | committing | contained | completed | failed
+
+waiting-approval
+  -> authorizing | contained | dead-lettered | failed
+
+executing
+  -> deliberating | reconciling | committing | contained | failed
+
+reconciling
+  -> deliberating | committing | waiting | contained | dead-lettered | failed
+
+committing
+  -> deliberating | waiting | contained | completed | dead-lettered | failed
+
+waiting
+  -> hydrating | contained | completed | dead-lettered | failed
+
+contained
+  -> hydrating | waiting | dead-lettered | failed
+
+completed
+  -> terminal
+
+dead-lettered
+  -> terminal
+
+failed
+  -> terminal
+```
+
+Transient retry attempts do not need a phase transition when they remain inside the same semantic stage.
+
+A terminal run is never silently reopened. A later recovery/manual-resolution flow creates a new authorized wake or explicit recovery record that references the prior terminal run.
+
+## 7.3 `RunRecord`
 
 ```ts
 export interface RunRecord {
@@ -457,9 +425,7 @@ export interface RunRecord {
 }
 ```
 
-`run_id` is deterministic from stable wake identity, not random retry state.
-
-Recommended derivation:
+`run_id` is deterministic from stable wake identity, not random retry state:
 
 ```text
 run_id = hash(canonical JSON of agent_id + wake.idempotency_key)
@@ -467,7 +433,7 @@ run_id = hash(canonical JSON of agent_id + wake.idempotency_key)
 
 Do not use delimiter-joined strings for security-sensitive binding hashes.
 
-## 7.3 `RunCheckpoint`
+## 7.4 `RunCheckpoint`
 
 ```ts
 export interface RunCheckpoint {
@@ -488,7 +454,7 @@ export interface RunCheckpoint {
 
 The checkpoint stores references/hashes, not unrestricted copied model context or secrets.
 
-## 7.4 `RunBudgetSpec`
+## 7.5 `RunBudgetSpec`
 
 ```ts
 export interface RunBudgetSpec {
@@ -506,11 +472,17 @@ export interface RunBudgetSpec {
 }
 ```
 
-Every run must resolve to a bounded spec.
+Every run resolves to a bounded spec. Missing `budget_ref` never means unlimited.
 
-Missing `budget_ref` never means unlimited.
+`max_risk` uses the existing order:
 
-## 7.5 Budget ledger
+```text
+R0 < R1 < R2 < R3 < R4
+```
+
+`max_wall_time_ms` means **cumulative active orchestration/runtime time**, not calendar time spent dormant in `waiting` or `waiting-approval`. A later policy may add a separate elapsed-calendar expiry, but approval waiting does not silently consume the active execution budget.
+
+## 7.6 Budget ledger
 
 Track at least:
 
@@ -525,11 +497,7 @@ A budget reservation has a stable reservation id and belongs to one run step/act
 
 Reservations prevent parallel or retried work from each observing the same full remaining budget.
 
-## 7.6 `ModelInvocationRecord`
-
-Model calls consume resources and may fail ambiguously.
-
-Conceptual shape:
+## 7.7 `ModelInvocationRecord`
 
 ```ts
 export interface ModelInvocationRecord {
@@ -550,9 +518,24 @@ export interface ModelInvocationRecord {
 }
 ```
 
-If a model call becomes ambiguous because the process died mid-call, Phase 4 may conservatively charge the reservation before retrying. A retry requires remaining budget.
+If a model call becomes ambiguous because the process died mid-call, its reservation is conservatively accounted before retry. A retry requires remaining budget.
 
-## 7.7 `AuthorityResolution`
+## 7.8 `AuthoritySource`
+
+```ts
+export type AuthoritySource =
+  | 'self-authorized'
+  | 'contract-authorized'
+  | 'resource-owner-authorized'
+  | 'counterparty-authorized'
+  | 'multi-party-authorized'
+  | 'guardian-authorized'
+  | 'policy-authorized';
+```
+
+`emergency-contained` is deliberately excluded because containment is a restriction source, not an authority grant.
+
+## 7.9 `AuthorityResolution`
 
 ```ts
 export interface AuthorityResolution {
@@ -584,7 +567,7 @@ export interface AuthorityResolution {
 
 An `ActionIntent` never chooses this result.
 
-## 7.8 `ApprovalRequest`
+## 7.10 `ApprovalRequest`
 
 ```ts
 export interface ApprovalRequest {
@@ -606,7 +589,7 @@ export interface ApprovalRequest {
 
 `binding_hash` uses canonical structured serialization, not delimiter concatenation.
 
-## 7.9 `ApprovalGrant`
+## 7.11 `ApprovalGrant`
 
 ```ts
 export interface ApprovalGrant {
@@ -623,22 +606,35 @@ export interface ApprovalGrant {
 
 A grant is not portable to a different action hash or widened scope.
 
-## 7.10 `ActionExecutionStatus`
+## 7.12 Separate ledger lifecycle from external effect result
+
+Do **not** compress ledger progress and real-world outcome into one enum.
 
 ```ts
-export type ActionExecutionStatus =
+export type ActionExecutionLifecycle =
   | 'planned'
   | 'claimed'
   | 'executing'
+  | 'resolved'
+  | 'canonically-recorded';
+
+export type ActionEffectStatus =
+  | 'not-attempted'
   | 'succeeded'
   | 'failed'
   | 'partial'
-  | 'unknown'
-  | 'reconciled'
-  | 'canonically-recorded';
+  | 'unknown';
+
+export type ActionReconciliationStatus =
+  | 'not-needed'
+  | 'pending'
+  | 'confirmed'
+  | 'unresolved';
 ```
 
-## 7.11 `ActionExecutionRecord`
+This separation prevents an execution that was reconciled as `succeeded` from losing the actual effect result merely because its ledger lifecycle later says `resolved`.
+
+## 7.13 `ActionExecutionRecord`
 
 ```ts
 export interface ActionExecutionRecord {
@@ -647,7 +643,9 @@ export interface ActionExecutionRecord {
   run_id: string;
   action_id: string;
   action_hash: string;
-  status: ActionExecutionStatus;
+  lifecycle: ActionExecutionLifecycle;
+  effect_status: ActionEffectStatus;
+  reconciliation_status: ActionReconciliationStatus;
   fencing_token: number;
   budget_reservation_id: string;
   executor_id: string;
@@ -660,7 +658,7 @@ export interface ActionExecutionRecord {
 }
 ```
 
-## 7.12 `ActionReceipt`
+## 7.14 `ActionReceipt`
 
 ```ts
 export interface ActionReceipt {
@@ -682,7 +680,7 @@ export interface ActionReceipt {
 
 Receipts are immutable evidence. Reconciliation produces additional evidence rather than silently rewriting history.
 
-## 7.13 `ContainmentRecord`
+## 7.15 `ContainmentRecord`
 
 ```ts
 export interface ContainmentRecord {
@@ -704,7 +702,7 @@ export interface ContainmentRecord {
 
 Expiry without review must not silently turn into either permanent suspension or automatic unsafe release.
 
-## 7.14 `DeadLetterRecord`
+## 7.16 `DeadLetterRecord`
 
 ```ts
 export interface DeadLetterRecord {
@@ -725,8 +723,6 @@ export interface DeadLetterRecord {
 
 # 8. Optional `ActionIntent` widening
 
-The model/upstream proposal may include additional descriptive impact hints:
-
 ```ts
 export interface ActionIntent {
   // existing fields remain
@@ -745,9 +741,7 @@ export interface ActionIntent {
 }
 ```
 
-These are claims/proposals, not trusted authority facts.
-
-The authority resolver must independently resolve them where required.
+These are proposal claims, not trusted authority facts. The authority resolver independently resolves them where required.
 
 ---
 
@@ -811,8 +805,8 @@ export interface ContextHydratorPort {
 
 Responsibilities:
 
-- load the committed Residence state required for the run;
-- load a waiting checkpoint when resuming;
+- load committed Residence state required for the run;
+- load waiting checkpoint on resume;
 - respect sensitivity/sealed boundaries;
 - provide stable hashes/references for what the model saw.
 
@@ -826,20 +820,7 @@ export interface WakeAuthorityResolverPort {
 }
 ```
 
-It determines whether a wake source is allowed to start/resume a run.
-
-Examples:
-
-```text
-human authenticated request
-signed webhook sender
-registered schedule rule
-state-trigger rule
-approval-grant resume event
-peer delegation
-```
-
-A valid wake authority still does not authorize actions produced during the run.
+It decides whether a wake source may start/resume a run. A valid wake authority still does not authorize actions produced during the run.
 
 ## 9.4 `ActionAuthorityResolverPort`
 
@@ -849,9 +830,7 @@ export interface ActionAuthorityResolverPort {
 }
 ```
 
-Phase 4 MVP implementation may use deterministic/static grants and references.
-
-It does not need a full graph database.
+Phase 4 MVP may use deterministic/static grants and references. It does not need a full graph database.
 
 ## 9.5 `PolicyPort`
 
@@ -892,7 +871,7 @@ export interface RunStateStorePort {
   reserveBudgetAndClaimAction(...): Promise<ActionExecutionRecord>;
   markActionExecuting(...): Promise<ActionExecutionRecord>;
   appendActionReceipt(...): Promise<void>;
-  markActionReconciled(...): Promise<void>;
+  updateActionResolution(...): Promise<ActionExecutionRecord>;
   markActionCanonicallyRecorded(...): Promise<void>;
 
   createApprovalRequest(...): Promise<ApprovalRequest>;
@@ -918,7 +897,7 @@ export interface ActionExecutorPort {
 }
 ```
 
-Descriptor includes:
+Descriptor:
 
 ```ts
 export interface ActionExecutorDescriptor {
@@ -937,73 +916,42 @@ export interface CommitPort {
 }
 ```
 
-The commit port is the only path from completed workflow facts into canonical Residence state.
-
-It performs fencing/base-version checks.
+The commit port is the only path from completed workflow facts into canonical Residence state. It performs fencing/base-version checks.
 
 A provider receipt is not itself a canonical commit.
 
 ---
 
-# 10. Run state machine
+# 10. Run lifecycle semantics
 
-The workflow state machine is intentionally resumable.
-
-```text
-accepted
-  ↓
-hydrating
-  ↓
-deliberating
-  ↓
-authorizing
-  ├─ denied → deliberating / completed
-  ├─ approval required → waiting-approval
-  ├─ contained → contained
-  └─ authorized
-        ↓
-      executing
-        ├─ definitive failure → deliberating / completed
-        ├─ ambiguous effect → reconciling
-        └─ receipt
-              ↓
-            committing
-              ├─ retry commit only
-              └─ completed / deliberating / waiting
-```
+The run phase table in §7.2 is normative.
 
 Important: an action effect and a canonical commit are separate transitions.
 
 ## 10.1 Waiting
 
-`waiting-approval` and `waiting` are persisted states.
-
-They do not imply a live process.
+`waiting-approval` and `waiting` are persisted states. They do not imply a live process.
 
 The runtime must:
 
 1. persist checkpoint;
-2. release active execution lease/fencing ownership as appropriate;
+2. release active execution ownership;
 3. return control to the host;
 4. resume only from a new authorized wake/event.
 
 ## 10.2 Resume fencing
 
-When a waiting run resumes, the per-Agent coordinator issues a fresh fencing token and updates the run.
+When a waiting/contained run is authorized to resume, the per-Agent coordinator issues a fresh fencing token and updates the run.
 
-Any stale asynchronous worker holding an older token must fail before:
+Any stale asynchronous worker holding an older token must fail before claiming a new external action or committing canonical Residence state.
 
-- claiming a new external action;
-- appending a canonical receipt state transition that requires current ownership;
-- committing the Residence.
+The run retains previous fencing tokens in history/evidence; only the latest token is valid for new mutation.
 
 ---
 
 # 11. Wake identity and duplicate handling
 
-Duplicate wake delivery must map to one logical run.
-
-Recommended invariant:
+Duplicate wake delivery maps to one logical run:
 
 ```text
 (agent_id, wake.idempotency_key) -> exactly one run_id
@@ -1013,47 +961,35 @@ Recommended invariant:
 
 A duplicate wake must not reset budget, clear approvals, or create a second effect ledger.
 
-A later independent wake uses a different idempotency key even if its trigger is conceptually similar.
+A later independent wake uses a different idempotency key even if conceptually similar.
 
 ---
 
 # 12. Trigger ingestion
 
-All trigger sources compile into a standard `WakeRecord`.
+All trigger sources compile into standard `WakeRecord`.
 
 ## 12.1 Schedule / exact instant
 
-Use Phase 3 `TemporalWakeCompiler` where exact temporal intent must be compiled.
-
-The scheduler submits a WakeRecord when due.
-
-Temporal evidence still does not become the lease clock.
+Use Phase 3 `TemporalWakeCompiler` where exact temporal intent must be compiled. Temporal evidence still does not become the lease clock.
 
 ## 12.2 Webhook
 
-Webhook ingress must verify its own transport/source authorization first.
-
-The delivery id or equivalent stable external id must participate in wake idempotency.
-
-Webhook payload content is not action authority.
+Webhook ingress verifies transport/source authorization first. Stable external delivery id participates in wake idempotency. Webhook payload content is not action authority.
 
 ## 12.3 State trigger
 
-A committed event/state transition can match a configured trigger rule and enqueue a wake.
-
-The triggering event id + rule id should derive idempotency.
+A committed event/state transition may match a configured trigger rule and enqueue a wake. Triggering event id + rule id should derive idempotency.
 
 ## 12.4 Human wake
 
-Human/API authentication grants permission to submit the wake only within the submitted operation's scope.
-
-It does not grant future generated actions unlimited authority.
+Human/API authentication grants permission to submit the wake only within the submitted operation's scope. It does not grant future generated actions unlimited authority.
 
 ---
 
 # 13. Wake authority
 
-Wake acceptance becomes a two-step concept:
+Wake acceptance has two distinct gates:
 
 ```text
 transport/authentication accepted
@@ -1081,32 +1017,26 @@ A wake with missing/invalid required authority is durably denied and never creat
 
 # 14. Hydration
 
-Hydration establishes the run's starting state.
-
-It must resolve:
+Hydration resolves:
 
 - latest committed manifest;
 - base manifest version;
 - selected Residence objects/context;
 - prior run checkpoint on resume;
-- relevant previous receipts/denials;
+- previous receipts/denials;
 - active containment state;
 - resolved budget profile.
 
-Hydration must not silently create a new object version solely because information was read.
-
-Recall remains an event, consistent with Phase 3.
+Hydration must not create a new object version solely because information was read. Recall remains an event.
 
 ---
 
 # 15. Model deliberation
 
-Model deliberation is bounded by both run turns and model-specific budget dimensions.
-
 Before a model call:
 
-1. validate run still owns current fencing token if required by host orchestration;
-2. evaluate containment that blocks model execution;
+1. validate current run ownership/fencing where required by host orchestration;
+2. evaluate model-relevant containment;
 3. reserve a bounded model-call budget;
 4. persist `ModelInvocationRecord(status='reserved')`;
 5. persist transition to `calling`;
@@ -1116,31 +1046,31 @@ Before a model call:
 
 A model call can be retried only under budget and invocation-state rules.
 
-If the process crashes after `calling` but before a receipt-like result is recorded, that invocation is `unknown`. Its reservation is conservatively accounted until explicitly resolved/released.
+If the process crashes after `calling` but before result persistence, the invocation becomes `unknown`. Its reservation is conservatively charged/held before retry; retry requires remaining budget.
+
+Because a model call does not itself grant an external semantic action effect, Phase 4 does not use the Action Effect Ledger for model calls. It still accounts model cost and invocation ambiguity separately.
 
 ---
 
 # 16. Proposal validation
 
-Before authority resolution, every model proposal must be structurally validated.
+Before authority resolution, every model proposal is structurally validated.
 
-Reject or normalize according to explicit rules:
+Reject or normalize under explicit rules:
 
 - duplicate action ids in one turn;
 - duplicate idempotency keys;
 - invalid risk/sensitivity values;
-- target/scope values outside schema;
+- invalid targets/scopes;
 - malformed entity/resource references;
 - impossible budget-impact claims;
 - unexpected schema fields if strict mode is configured.
 
-A malformed model output never reaches the executor.
+Malformed model output never reaches the executor.
 
 ---
 
 # 17. Authority resolution
-
-Authority and policy remain separate.
 
 For every action:
 
@@ -1158,19 +1088,7 @@ Approval state
 Final ExecutionAuthorization
 ```
 
-Potential authority sources include:
-
-```text
-self-authorized
-contract-authorized
-resource-owner-authorized
-counterparty-authorized
-multi-party-authorized
-guardian-authorized
-policy-authorized
-```
-
-`emergency-contained` is a restriction source, not permission to broaden action authority.
+Authority and policy remain separate.
 
 ## 17.1 No universal owner shortcut
 
@@ -1180,13 +1098,11 @@ Phase 4 must not implement:
 if admin then authorized for everything
 ```
 
-Static MVP grants can be broad for specific resources/scopes, but their scope must remain explicit.
+Static MVP grants can be broad for specific resources/scopes, but their scope remains explicit.
 
 ## 17.2 Residence-bearing Resource guard
 
-Before destructive/revoking actions, the resolver must determine whether affected storage/credentials are Residence-bearing Resources.
-
-At minimum it must classify continuity impact:
+Before destructive/revoking actions, the resolver determines whether affected storage/credentials are Residence-bearing Resources and classifies:
 
 ```text
 none
@@ -1198,13 +1114,11 @@ continuity-destructive
 
 `migration-required` and `continuity-destructive` cannot be authorized solely by ordinary resource ownership.
 
-They require an appropriate continuity precondition or separate governance.
-
 ---
 
 # 18. Policy composition
 
-Policy engine decisions remain:
+Policy decisions remain:
 
 ```text
 allow
@@ -1228,15 +1142,13 @@ wake/run validity
 + fencing validity
 ```
 
-No single one of those inputs grants execution by itself.
+No single input grants execution by itself.
 
 ---
 
 # 19. Approval semantics
 
-Approval must bind to the exact action being approved.
-
-The binding includes at least:
+Approval binds to exact action context:
 
 ```text
 action_hash
@@ -1247,13 +1159,9 @@ expiry
 required parties
 ```
 
-Use canonical structured serialization for binding hashes.
-
-Do not use ambiguous delimiter-based concatenation.
+Use canonical structured serialization for binding hashes. Do not use ambiguous delimiter-based concatenation.
 
 ## 19.1 Approval wait
-
-When approval is required:
 
 ```text
 persist ApprovalRequest
@@ -1267,42 +1175,38 @@ persist ApprovalRequest
 
 A grant produces a new wake/resume event.
 
-On resume Phase 4 must revalidate:
+Resume revalidates:
 
 - approval not expired/revoked;
 - action hash unchanged;
 - authority resolution still valid;
-- policy version and result still acceptable;
+- policy version/result still acceptable;
 - required parties satisfied;
 - budget still available;
 - containment does not block execution;
 - fencing token is fresh.
 
-Approval does not freeze the world forever.
-
 ## 19.3 Multi-party
 
-Required parties must be unique and explicitly counted.
-
-Duplicate grants from the same approver do not increase quorum.
+Required parties are unique. Duplicate grants from the same approver do not increase quorum.
 
 ---
 
 # 20. Multi-dimensional budget semantics
 
-A run budget is resource governance, not ownership of the Entity.
+A run budget is resource governance, not Entity ownership.
 
 ## 20.1 Hard dimensions
 
-At minimum Phase 4 tracks:
+At minimum:
 
 ```text
 turns
-wall time
+active wall time
 model input tokens
 model output tokens
 model cost
-model calls/tool calls
+model/tool calls
 external actions
 storage writes
 network requests
@@ -1332,25 +1236,15 @@ check remaining
 
 ## 20.3 Budget exhaustion
 
-Budget exhaustion is a normal bounded-run stop condition, not automatically an error.
-
-The run may:
-
-- complete with `stop_reason='budget-exhausted'`;
-- wait for a separately authorized budget extension;
-- commit all already-known receipts/effects before stopping.
-
-Budget exhaustion never justifies discarding unknown effect state.
+Budget exhaustion is a normal bounded-run stop condition. The run may complete with `stop_reason='budget-exhausted'` or wait for separately authorized extension, but it must first preserve all known/unknown effect evidence.
 
 ---
 
-# 21. Durable effect ledger
+# 21. Durable Effect Ledger
 
-This is the most important new correctness mechanism in Phase 4.
+This is the main Phase 4 correctness mechanism.
 
 ## 21.1 Why final commit is not enough
-
-Bad sequence:
 
 ```text
 external API succeeds
@@ -1360,7 +1254,7 @@ external API succeeds
 → external API executes again
 ```
 
-Therefore effect state must live outside the final manifest commit path.
+Effect state therefore lives outside the final manifest commit path.
 
 ## 21.2 Pre-effect claim
 
@@ -1371,39 +1265,36 @@ validate authorization
 → validate containment
 → validate fencing token
 → atomically reserve budget + claim execution
-→ durable status = claimed
+→ lifecycle = claimed
+→ effect_status = not-attempted
 ```
 
-Only the holder of the current valid claim/fencing token may advance it.
+Only the current valid claim/fencing holder may advance it.
 
 ## 21.3 Mark executing before call
 
-Immediately before crossing the external-effect boundary:
-
 ```text
 claimed
-→ durable status = executing
+→ durable lifecycle = executing
 → call provider
 ```
 
-If a process dies while status is only `claimed`, the call was not yet declared started and the run may continue to the executing boundary.
+If a process dies while lifecycle is only `claimed`, the call was not declared started and may proceed to the executing boundary on recovery.
 
-If a process dies after status becomes `executing` but before a definitive receipt, the effect is treated as ambiguous even if in reality no network packet left the process.
+If it dies after lifecycle becomes `executing` but before a definitive receipt, `effect_status` becomes/continues `unknown` and reconciliation rules apply even if no network packet actually left the process.
 
 This conservative rule prevents duplicate effects.
 
-## 21.4 Result states
+## 21.4 Result recording
 
-Provider result becomes one of:
+Provider result sets:
 
 ```text
-succeeded
-failed
-partial
-unknown
+effect_status = succeeded | failed | partial | unknown
+lifecycle = resolved       # when enough durable evidence exists to leave execution stage
 ```
 
-Never convert an ambiguous timeout/network failure into `failed` unless the executor can prove the provider did not apply the effect.
+`failed` is used only when the executor can prove the provider did not apply the intended effect or definitively rejected it.
 
 ## 21.5 Provider idempotency modes
 
@@ -1413,15 +1304,13 @@ best-effort
 none
 ```
 
-For `provider-enforced`, retry with the same provider key may be allowed after adapter-specific proof of idempotent semantics.
+For `provider-enforced`, retry with the same provider key may be allowed after adapter-specific proof.
 
-For `best-effort` or `none`, an `executing` record with no definitive receipt goes to reconciliation rather than blind retry.
+For `best-effort` or `none`, an ambiguous `executing` record goes to reconciliation rather than blind retry.
 
 ## 21.6 Reconciliation
 
-`ActionExecutorPort.reconcile()` attempts to discover the real external state.
-
-Possible outcomes:
+`ActionExecutorPort.reconcile()` may return:
 
 ```text
 confirmed-succeeded
@@ -1430,19 +1319,20 @@ confirmed-partial
 still-unknown
 ```
 
+Reconciliation updates `effect_status` and `reconciliation_status`, while immutable receipts/evidence remain append-only.
+
 If still unknown:
 
-- keep the durable unknown state;
-- wait/manual-review or dead-letter according to policy;
-- do not blindly execute again.
+- keep `effect_status = unknown`;
+- set `reconciliation_status = unresolved`;
+- wait/manual-review or dead-letter;
+- never blindly execute again.
 
 ---
 
 # 22. Action receipt and canonical commit
 
-A durable action receipt is evidence of the attempted external effect.
-
-It is not the same as a canonical Residence state transition.
+A durable receipt is evidence of the attempted external effect. It is not the same as canonical Residence state.
 
 Correct sequence:
 
@@ -1452,27 +1342,29 @@ ActionExecutionRecord
 → related EventEnvelope(s)
 → object/memory proposal materialization if applicable
 → canonical commit
-→ execution status = canonically-recorded
+→ lifecycle = canonically-recorded
 ```
 
-If canonical commit fails after a succeeded receipt:
+If canonical commit fails after a succeeded receipt, retry commit only.
 
-- retry the commit;
-- do not re-execute the external action.
+## 22.1 Containment must not erase safety evidence
 
-If commit eventually cannot converge, dead-letter the commit/reconciliation path while preserving the receipt.
+Containment is rechecked before canonical commit, but its effect at this boundary is scoped:
+
+- it may block **new consequential mutations** that would extend or compound an action;
+- it must **not** prevent the minimum append-only persistence needed to record an already-attempted external effect, `ActionReceipt`, denial, containment event, or other safety/audit evidence.
+
+Therefore a containment arriving after an external effect may cause the run to commit only mandatory effect/audit evidence and then enter `contained`, rather than suppressing the receipt and losing track of reality.
 
 ---
 
 # 23. Containment
 
-Emergency containment remains required.
+Emergency containment is a scoped restriction system, not universal root authority.
 
-It is a scoped restriction system, not universal root authority.
+## 23.1 Required checks
 
-## 23.1 Required boundaries
-
-The orchestrator re-evaluates active containment at minimum:
+Re-evaluate containment at minimum:
 
 ```text
 before model invocation
@@ -1481,48 +1373,38 @@ before destructive Residence mutation
 before canonical commit
 ```
 
+The canonical-commit check follows §22.1: mandatory effect/audit evidence remains recordable.
+
 ## 23.2 Expiry and review
 
-When an active containment reaches its expiry/review boundary without resolution:
+At expiry/review boundary without resolution:
 
 ```text
 active
 → review-due
 ```
 
-The system does not silently:
-
-- release all restrictions;
-- convert them into permanent suspension;
-- delete Residence state.
-
-A reviewer/authorized policy path must renew, release, or escalate.
+The system does not silently release all restrictions or convert them into permanent suspension. An authorized path renews, releases, or escalates.
 
 ## 23.3 Escalation
 
-If prolonged containment substantively impairs continuity/recoverability/migration, it must become an explicit higher-order governance state rather than remaining an eternal emergency flag.
+If prolonged containment substantively impairs continuity/recoverability/migration, it becomes an explicit higher-order governance state rather than an eternal emergency flag.
 
 ---
 
 # 24. Dead-letter semantics
 
-Dead-letter is for work that cannot safely make progress automatically.
+Dead-letter is for work that cannot safely progress automatically.
 
 Examples:
 
 - provider result remains unknown and cannot be reconciled;
-- repeated retryable model/transport errors exceed a bounded retry profile;
+- retryable model/transport errors exceed bounded retries;
 - commit conflict repeatedly fails under fresh fencing;
 - malformed persisted state violates invariants;
 - required approval source can no longer be resolved.
 
-Dead-letter must include:
-
-- stage;
-- attempts;
-- last error;
-- whether an external effect is known/unknown;
-- whether manual resolution is required.
+Dead-letter records stage, attempts, last error, effect-state certainty, and whether manual resolution is required.
 
 Dead-letter never means "forget this run".
 
@@ -1530,47 +1412,29 @@ Dead-letter never means "forget this run".
 
 # 25. Retry policy by boundary
 
-## 25.1 Before any external effect
+## 25.1 Before external effect
 
-Safe retry candidates:
-
-- hydration read;
-- deterministic authority resolution;
-- deterministic policy evaluation;
-- approval lookup;
-- pre-effect validation.
-
-All remain bounded by retry limits.
+Hydration, deterministic authority resolution, deterministic policy evaluation, approval lookup, and pre-effect validation may be retried within explicit bounds.
 
 ## 25.2 Model invocation
 
-May retry under model budget rules.
+May retry under model budget rules. Ambiguous calls are conservatively budgeted.
 
-Ambiguous model calls are conservatively budgeted.
+## 25.3 Action lifecycle `claimed`
 
-## 25.3 External action before `executing`
+May proceed to `executing`; the effect was not declared started yet.
 
-A durable `claimed` state can proceed.
+## 25.4 Action lifecycle `executing`
 
-## 25.4 External action after `executing`
-
-No blind retry unless executor/provider idempotency semantics explicitly make it safe.
-
-Otherwise reconcile.
+No blind retry unless provider idempotency semantics explicitly prove safety. Otherwise reconcile.
 
 ## 25.5 After definitive receipt
 
-Retry only canonical persistence/commit work.
-
-Do not repeat the effect.
+Retry canonical persistence/commit only. Do not repeat the effect.
 
 ---
 
 # 26. Bounded multi-turn loop
-
-A Phase 4 run may include multiple model turns, but remains bounded.
-
-Suggested loop:
 
 ```text
 hydrate
@@ -1589,35 +1453,23 @@ while budget permits and stop condition absent:
 commit
 ```
 
-Phase 4 MVP processes external actions sequentially within one Agent run.
-
-Parallel action execution is deferred because it complicates budget reservation, ordering, partial failure, and relation-sensitive authority without being required to prove the architecture.
+Phase 4 MVP processes external actions sequentially within one Agent run. Parallel action execution is deferred.
 
 ---
 
 # 27. Memory proposals
 
-Model memory proposals remain proposals.
+Model memory proposals remain proposals. They pass schema/size, sensitivity, provenance, policy, and canonical-role rules before canonicalization.
 
-They are not written directly by the model.
-
-Before canonicalization they must pass:
-
-- schema/size checks;
-- sensitivity classification;
-- provenance assignment;
-- policy as required;
-- canonical-role rules.
-
-A recall is still an event and does not mutate source ObjectVersion merely to record read time.
+A recall is still an event and does not mutate the source ObjectVersion merely to record read time.
 
 ---
 
 # 28. Next-wake proposals
 
-A model may propose a future wake, but a proposal is not scheduling authority.
+A model may propose a future wake, but proposal is not scheduling authority.
 
-A future wake must pass:
+A future wake passes:
 
 - recursive-wake budget;
 - wake authority/policy;
@@ -1625,28 +1477,17 @@ A future wake must pass:
 - idempotency derivation;
 - scheduling persistence.
 
-The resulting `WakeRecord` is a new independent wake, not an invisible loop continuation.
+The result is a new `WakeRecord`, not an invisible loop continuation.
 
 ---
 
 # 29. Canonical coordinator boundary
 
-Phase 4 must not turn the canonical coordinator into a vendor/network orchestrator.
+`workflow-core` performs asynchronous deliberation/effects. The coordinator/commit boundary verifies base version + fencing and persists canonical events/object versions/manifest.
 
-Recommended refactor direction:
+The current synchronous `AgentCoordinator.runTurn()` may be refactored or wrapped to expose a narrower commit-oriented surface, but all Phase 0–3 deterministic semantics/tests remain valid.
 
-```text
-workflow-core
-  does async deliberation/effects
-
-coordinator/commit boundary
-  verifies base version + fencing
-  persists canonical events/object versions/manifest
-```
-
-The current synchronous `AgentCoordinator.runTurn()` may be refactored or wrapped to expose a narrower commit-oriented surface, but Phase 0–3 deterministic semantics and tests must remain valid.
-
-The coordinator must still reject stale fencing tokens at the last safe point before canonical mutation.
+The coordinator still rejects stale fencing tokens at the last safe point before canonical mutation.
 
 ---
 
@@ -1661,35 +1502,23 @@ accept wake
 create/get run
 issue/refresh run fencing token
 advance bounded run
-resume waiting run
+resume waiting/contained run
 read run status
 submit approval grant
 apply/release containment
 ```
 
-The Durable Object does not need to hold one HTTP request open across approval waiting.
+It does not hold one HTTP request open across approval waiting.
 
-## 30.1 Suggested internal routes
-
-Exact paths can be adjusted during implementation, but semantics should include:
-
-```text
-GET  /internal/v1/agents/:agent/runs/:run
-POST /internal/v1/agents/:agent/runs/:run/advance
-POST /internal/v1/agents/:agent/approvals/:request/grants
-POST /internal/v1/agents/:agent/containments
-POST /internal/v1/agents/:agent/containments/:id/release
-```
-
-Public exposure remains behind the Worker authorization boundary.
+Suggested internal semantics include routes for run status/advance, approval grants, and containment apply/release. Exact URLs may be refined without changing the architecture.
 
 ---
 
 # 31. D1 persistence strategy
 
-Phase 4 persistence should use dedicated tables/records for operational run state rather than overloading the event log as a mutable state table.
+Use dedicated operational tables/records rather than treating the append-only event log as mutable run state.
 
-Likely logical tables:
+Logical tables:
 
 ```text
 runs
@@ -1707,9 +1536,7 @@ dead_letters
 
 Events remain append-only audit/lineage evidence.
 
-Operational rows may have controlled state transitions, with append-only evidence where required.
-
-Atomic operations required by the port must map to D1 transactions or equivalent single-writer transaction boundaries.
+Atomic port operations map to D1 transactions or equivalent single-writer transaction boundaries.
 
 ---
 
@@ -1717,22 +1544,11 @@ Atomic operations required by the port must map to D1 transactions or equivalent
 
 Phase 3 invariants remain unchanged.
 
-Phase 4 records temporal provenance on:
-
-- run creation/checkpoints;
-- model invocation evidence;
-- approval request/grant;
-- action claim/receipt;
-- containment enter/review/release;
-- canonical commit.
+Phase 4 records temporal provenance on run/checkpoint, model invocation, approval, action claim/receipt, containment, and canonical commit boundaries.
 
 The workflow does not use CTCL as the lease/fencing clock.
 
-Caller/runtime may attach CTCL evidence where available.
-
-Local degraded evidence remains explicit when policy permits.
-
-High-risk temporal requirements may use the Phase 3 temporal trust helper.
+Local degraded evidence remains explicit when policy permits. High-risk temporal requirements may use the Phase 3 temporal trust helper.
 
 ---
 
@@ -1740,41 +1556,27 @@ High-risk temporal requirements may use the Phase 3 temporal trust helper.
 
 ## 33.1 Secrets
 
-Do not persist:
-
-- raw provider API keys;
-- OAuth refresh tokens;
-- session cookies;
-- private signing keys;
-- full secret-bearing HTTP payloads.
+Do not persist raw provider keys, OAuth refresh tokens, cookies, private signing keys, or full secret-bearing HTTP payloads.
 
 Receipts use hashes, provider ids, external refs, and redacted summaries.
 
 ## 33.2 Model context
 
-Model context must follow sensitivity/sealed-core rules.
-
-A model adapter does not gain access to all Residence data merely because it implements `ModelPort`.
+Model context follows sensitivity/sealed-core rules. Implementing `ModelPort` does not grant access to all Residence data.
 
 ## 33.3 Approval replay
 
-Approval grants bind to exact requests/actions and use idempotency keys.
-
-Expired/revoked grants fail closed.
+Approval grants bind to exact requests/actions and use idempotency keys. Expired/revoked grants fail closed.
 
 ## 33.4 Executor scope
 
-Executors receive only authorized scopes and the action material needed for that operation.
-
-They do not receive general policy mutation privileges.
+Executors receive only authorized scope/action material. They do not receive general policy mutation privileges.
 
 ---
 
 # 34. Error taxonomy
 
-Phase 4 normalizes orchestration failures into a small provider-neutral set.
-
-Suggested codes:
+Suggested provider-neutral codes:
 
 ```text
 invalid_wake
@@ -1801,7 +1603,7 @@ retry_exhausted
 invalid_persisted_state
 ```
 
-The error taxonomy must preserve whether an external effect may already have occurred.
+Every error path preserves whether an external effect may already have occurred.
 
 ---
 
@@ -1809,54 +1611,27 @@ The error taxonomy must preserve whether an external effect may already have occ
 
 Normal CI uses only deterministic/fake providers.
 
-Required test implementations:
-
 ## 35.1 Deterministic model
 
-Supports scripted:
-
-- action proposals;
-- no-op/stop turns;
-- malformed output;
-- usage/cost values;
-- transient failure;
-- ambiguous invocation failure.
+Supports scripted actions, no-op/stop, malformed output, usage/cost, transient failure, and ambiguous invocation failure.
 
 ## 35.2 Static authority resolver
 
-Explicit grant table, for example:
-
-```text
-entity X may use resource Y for scope Z
-human approval source may grant action hash H
-self scope only applies to explicitly owned/controlled resource refs
-```
-
-No implicit universal admin authority.
+Uses explicit grant tables. No implicit universal admin authority.
 
 ## 35.3 Recording action executor
 
-Supports:
-
-- provider-enforced idempotency simulation;
-- no-idempotency mode;
-- successful effect;
-- definitive failure;
-- partial effect;
-- effect succeeds then process/test crashes before receipt;
-- reconcile success/failure/unknown.
+Supports provider-enforced idempotency simulation, no-idempotency mode, success, definitive failure, partial effect, crash-after-effect-before-receipt, and reconcile success/failure/unknown.
 
 ## 35.4 In-memory run store
 
-Must implement the same atomic semantic contract as D1 storage.
+Implements the same atomic semantic contract as D1 storage.
 
 ---
 
 # 36. Crash-injection test matrix
 
-Phase 4 correctness depends on failure placement, not only happy paths.
-
-At minimum inject failure/crash at:
+Inject failure/crash at minimum:
 
 1. after wake accepted, before run creation;
 2. after run creation, before hydration checkpoint;
@@ -1878,10 +1653,10 @@ Expected invariants:
 
 - no duplicate logical run;
 - no blind duplicate external effect;
-- unknown effect remains explicitly unknown;
-- budget cannot be silently reset;
-- approvals cannot widen scope after crash;
-- canonical commit can be retried independently from external effect.
+- unknown effect stays explicit;
+- budget cannot silently reset;
+- approvals cannot widen after crash;
+- canonical commit retries independently from external effect.
 
 ---
 
@@ -1889,68 +1664,42 @@ Expected invariants:
 
 ## 37.1 Schema tests
 
-Validate persisted shapes, canonical hashing, compatibility, and optional widening.
+Persisted shapes, canonical hashing, compatibility, optional widening.
 
 ## 37.2 Run state-machine tests
 
-Every legal/illegal `RunPhase` transition.
+Every legal/illegal transition from §7.2.
 
 ## 37.3 Budget tests
 
-- reservation arithmetic;
-- atomic competing reservations;
-- settlement/release;
-- retry accounting;
-- max risk enforcement;
-- budget-exhausted stop.
+Reservation arithmetic, competing reservations, settlement/release, retry accounting, active-wall-time semantics, max risk, budget exhaustion.
 
 ## 37.4 Authority tests
 
-- action cannot self-authorize;
-- resource ownership stays resource-scoped;
-- Residence-bearing Resource guard;
-- continuity preconditions;
-- expired authority.
+No self-certified authority; resource scope; Residence-bearing Resource guard; continuity preconditions; expiry.
 
 ## 37.5 Approval tests
 
-- exact binding;
-- hash/scope mismatch rejection;
-- expiry;
-- revocation;
-- multi-party uniqueness;
-- resumed revalidation.
+Exact binding; scope/hash mismatch; expiry; revocation; multi-party uniqueness; resumed revalidation.
 
-## 37.6 Execution ledger tests
+## 37.6 Effect-ledger tests
 
-- claim before effect;
-- `claimed` recovery;
-- `executing` ambiguity;
-- provider idempotency modes;
-- receipt immutability;
-- reconciliation;
-- commit-after-effect crash.
+Claim before effect; `claimed` recovery; `executing` ambiguity; lifecycle/effect/reconciliation separation; provider idempotency modes; receipt immutability; reconciliation; commit-after-effect crash.
 
 ## 37.7 Containment tests
 
-- active block;
-- scoped block;
-- review due;
-- renewal;
-- release;
-- escalation;
-- no identity mutation authority.
+Active/scoped block; review due; renewal; release; escalation; no identity mutation authority; mandatory audit/effect evidence remains recordable.
 
 ## 37.8 Integration tests
 
 At least:
 
 ```text
-schedule wake → fake model → authorized action → fake external effect → receipt → canonical commit
+schedule wake → fake model → authorized action → fake effect → receipt → canonical commit
 webhook wake → approval required → Waiting → approval grant → resume → one effect → commit
 state wake → no authority → denial with no executor call
 external effect succeeds → crash before receipt → reconcile → commit without re-execution
-containment activates mid-run → blocks next effect → persists resumable state
+containment activates after effect → receipt/audit persists → further effects blocked
 ```
 
 ## 37.9 Regression
@@ -1959,9 +1708,9 @@ All Phase 0–3 tests remain green.
 
 ---
 
-# 38. Architectural grep/boundary checks
+# 38. Architectural boundary checks
 
-Final Phase 4 verification should include semantic boundary checks such as:
+Final verification checks actual imports/symbols for:
 
 ```text
 workflow-core imports no Cloudflare runtime types
@@ -1971,7 +1720,7 @@ model adapter has no executor/tool connector reference
 CTCL/commoninstant does not appear in lease/fencing implementation
 ```
 
-Avoid naive ambiguous grep patterns; check actual symbols/imports.
+Avoid naive ambiguous grep patterns.
 
 ---
 
@@ -1979,88 +1728,45 @@ Avoid naive ambiguous grep patterns; check actual symbols/imports.
 
 Phase 4 architecture and merge correctness do not depend on a live model provider.
 
-Gate C is optional and separately activated after deterministic Phase 4 is green.
+Gate C is optional after deterministic Phase 4 is green.
 
-A live model gate must:
+A live model gate:
 
-1. select one `ModelPort` implementation;
-2. load credentials only from secret/environment configuration;
-3. run one disposable low-risk bounded turn;
-4. expose no live privileged executor to the model;
-5. confirm proposal parsing, usage accounting, and stop semantics;
-6. record only non-secret result metadata;
-7. not mutate Agent identity/lineage based on provider choice.
+1. selects one `ModelPort` implementation;
+2. loads credentials only from secret/environment configuration;
+3. runs one disposable low-risk bounded turn;
+4. exposes no privileged executor to the model;
+5. confirms proposal parsing, usage accounting, and stop semantics;
+6. records only non-secret metadata;
+7. never changes Agent identity/lineage based on provider choice.
 
-A live model outage does not invalidate deterministic workflow correctness.
-
-Provider choice remains an activation/configuration decision, not an architectural dependency.
+Provider outage does not invalidate deterministic workflow correctness.
 
 ---
 
 # 40. Optional later live action gate
 
-A separately controlled low-risk action smoke may be added after the deterministic executor/ledger implementation is mature.
-
-It is not required for Phase 4 merge correctness.
-
-A real irreversible/destructive action is never used as a smoke test.
+A separately controlled low-risk action smoke may be added after deterministic effect-ledger maturity. It is not required for Phase 4 merge correctness. Never use an irreversible/destructive action as a smoke test.
 
 ---
 
 # 41. Phase 4 convergence slices
 
-Implementation should converge in four coarse slices.
-
 ## 4A — Run / Authority / Budget Contracts + Durable Effect Ledger
 
-Deliver:
-
-- schema records;
-- `workflow-core` package skeleton/contracts;
-- Run phase machine;
-- budget ledger;
-- execution claim/receipt/reconcile semantics;
-- in-memory reference store;
-- deterministic crash tests for the effect ledger.
-
-No live model or Cloudflare dependency required.
+Deliver schema records, `workflow-core` contracts, exact Run phase machine, budget ledger, action claim/receipt/reconciliation semantics, in-memory reference store, and crash tests.
 
 ## 4B — Provider-neutral bounded-run orchestrator
 
-Deliver:
-
-- `ModelPort`;
-- evolved deterministic model adapter;
-- context hydration port;
-- wake/action authority ports;
-- policy composition;
-- bounded multi-turn loop;
-- proposal validation;
-- model budget accounting.
+Deliver `ModelPort`, deterministic model adapter, hydration, wake/action authority ports, policy composition, bounded multi-turn loop, proposal validation, and model budget accounting.
 
 ## 4C — Approval / Execution / Waiting Resume / Containment / Dead Letter
 
-Deliver:
-
-- approval requests/grants;
-- exact approval binding;
-- Waiting/resume;
-- action executor contract + deterministic executor;
-- full receipt/reconcile integration;
-- containment records/guards;
-- dead-letter logic.
+Deliver approval records/binding, Waiting/resume, action executor + deterministic executor, full effect-ledger integration, containment, and dead-letter logic.
 
 ## 4D — Cloudflare/control-plane integration + trigger paths
 
-Deliver:
-
-- D1 run/effect ledger adapter/migrations;
-- Durable Object run creation/advance/resume;
-- control-plane routes;
-- schedule/webhook/state trigger integration;
-- end-to-end integration tests;
-- README/examples/docs;
-- optional Gate C live model script/config.
+Deliver D1 run/effect storage and migrations, Durable Object run creation/advance/resume, control-plane routes, schedule/webhook/state integration, full integration tests, docs/examples, and optional Gate C live model activation.
 
 ---
 
@@ -2071,39 +1777,42 @@ Phase 4 is complete only when all statements below are proven by code/tests/insp
 1. A trigger never grants action authority by itself.
 2. Wake authority and action authority are distinct checks.
 3. The model never receives a live privileged connector/executor.
-4. `ActionIntent` cannot self-certify `authority_source`.
+4. `ActionIntent` cannot self-certify authority.
 5. Every external action has durable pre-effect claim state.
-6. Every attempted external effect ends with a definitive or explicit `unknown` receipt state.
+6. Every attempted external effect ends with a definitive or explicit `unknown` effect status.
 7. Crash after an external effect cannot cause blind re-execution.
-8. `claimed` and `executing` have different recovery semantics.
-9. Provider idempotency behavior is declared, not assumed.
-10. Approval binds to exact action/authority/scope/policy/expiry context.
-11. Waiting does not require a live process.
-12. Resume rehydrates checkpoint and revalidates authority/policy/approval/budget/containment.
-13. Budget is multi-dimensional and bounded even when `budget_ref` is omitted.
-14. Budget reservation occurs before resource consumption where retry/concurrency can overspend.
-15. Residence-bearing Resource destruction cannot pass ordinary resource-owner authority alone.
-16. Containment has scope, expiry/review, renewal, release/escalation semantics.
-17. Containment cannot silently grant identity rewrite authority.
-18. Duplicate wake produces at most one logical run.
-19. Duplicate action produces at most one external effect when provider idempotency supports it; otherwise ambiguous state is reconciled/manual rather than blindly repeated.
-20. A succeeded receipt followed by commit crash retries only commit/reconciliation, not the external effect.
-21. Dead-letter preserves whether effect state is none/known/unknown.
-22. Model provider selection cannot change Agent identity or canonical lineage.
-23. Normal CI is network-free and credential-free.
-24. `workflow-core` has no Cloudflare/vendor model/MCP dependency.
-25. Phase 0–3 regression suite remains green.
-26. Schedule, webhook, and state-trigger integration each prove one end-to-end bounded run or denial path.
-27. Emergency containment is testable during an in-flight run.
-28. Canonical coordinator still enforces stale fencing rejection before durable canonical mutation.
-29. CTCL temporal evidence is never used as lease/fencing ordering authority.
-30. Phase 5 can attach MCP/adapter capability discovery without rewriting the Phase 4 authority/execution boundary.
+8. `claimed` and `executing` lifecycle states have different recovery semantics.
+9. Ledger lifecycle, external effect status, and reconciliation status remain separately represented.
+10. Provider idempotency behavior is declared, not assumed.
+11. Approval binds to exact action/authority/scope/policy/expiry context.
+12. Waiting does not require a live process.
+13. Resume rehydrates checkpoint and revalidates authority/policy/approval/budget/containment.
+14. Budget is multi-dimensional and bounded even when `budget_ref` is omitted.
+15. Active wall-time budget excludes persisted approval/dormant waiting.
+16. Budget reservation occurs before resource consumption where retry/concurrency can overspend.
+17. Residence-bearing Resource destruction cannot pass ordinary resource-owner authority alone.
+18. Containment has scope, expiry/review, renewal, release/escalation semantics.
+19. Containment cannot silently grant identity rewrite authority.
+20. Containment cannot suppress mandatory durable recording of already-attempted effect/audit evidence.
+21. Duplicate wake produces at most one logical run.
+22. Duplicate action produces at most one external effect when provider idempotency supports it; otherwise ambiguous state is reconciled/manual rather than blindly repeated.
+23. A succeeded receipt followed by commit crash retries only commit/reconciliation, not the external effect.
+24. Dead-letter preserves whether effect state is none/known/unknown.
+25. Model provider selection cannot change Agent identity or canonical lineage.
+26. Normal CI is network-free and credential-free.
+27. `workflow-core` has no Cloudflare/vendor model/MCP dependency.
+28. Phase 0–3 regression suite remains green.
+29. Schedule, webhook, and state-trigger integration each prove one end-to-end bounded run or denial path.
+30. Emergency containment is testable during an in-flight run.
+31. Canonical coordinator still enforces stale fencing rejection before durable canonical mutation.
+32. CTCL temporal evidence is never used as lease/fencing ordering authority.
+33. Phase 5 can attach MCP/adapter capability discovery without rewriting the Phase 4 authority/execution boundary.
 
 ---
 
 # 43. Explicit design decisions
 
-The following are intentionally decided now because changing them later would be expensive:
+Expensive-to-change decisions locked now:
 
 ```text
 1. effect ledger exists separately from final manifest commit
@@ -2118,9 +1827,11 @@ The following are intentionally decided now because changing them later would be
 10. provider choice is outside core architecture
 11. run phase is separate from coarse Agent state
 12. no universal admin==subject-owner shortcut
+13. effect outcome is separate from ledger lifecycle
+14. mandatory effect/audit evidence survives containment
 ```
 
-The following remain deliberately replaceable:
+Deliberately replaceable:
 
 ```text
 specific live model vendor
@@ -2136,26 +1847,13 @@ future multi-Agent/federated orchestration
 
 # 44. Practicality rule
 
-Phase 4 follows a pragmatic rule:
-
 > **Implement the smallest design that makes irreversible mistakes difficult and reversible implementation choices easy.**
 
-Therefore:
-
-- exact-once-looking effect semantics get strong design now;
-- authority/identity boundaries get strong design now;
-- provider vendors remain replaceable;
-- full social-governance databases are deferred;
-- parallel action execution is deferred;
-- deterministic fakes prove architecture before live activation.
-
-This preserves room to iterate without making early MVP shortcuts become permanent sovereignty or correctness bugs.
+Therefore exact-once-looking effect semantics and authority/identity boundaries get strong design now, while provider vendors, full social-governance databases, and parallel action execution remain replaceable/deferred.
 
 ---
 
 # 45. Expected repository shape after Phase 4
-
-Conceptually:
 
 ```text
 packages/
@@ -2177,8 +1875,6 @@ packages/
 
 tests/
   helpers/
-    deterministic-model...
-    recording-action-executor...
   unit/
     workflow-run-state...
     run-budget...
@@ -2197,11 +1893,30 @@ No MCP package is required until Phase 5.
 
 ---
 
-# 46. Design closure
+# 46. Design self-review result
+
+The written design was re-read specifically for placeholders, internal contradictions, scope creep, and ambiguous semantics.
+
+Self-review changes made before requesting approval:
+
+1. replaced the original single `ActionExecutionStatus` with separate lifecycle/effect/reconciliation states;
+2. added the exact legal `RunPhase` transition table;
+3. defined `AuthoritySource` explicitly;
+4. defined `max_risk` ordering and active-wall-time semantics;
+5. clarified resume fencing after persisted waiting/containment;
+6. clarified that containment cannot suppress mandatory receipt/audit persistence after an effect already occurred.
+
+Placeholder scan: no unresolved placeholder is required to understand implementation semantics. Vendor selection is intentionally deferred as a named activation/configuration decision, not left unspecified accidentally.
+
+Scope check: Phase 4 remains one coherent subsystem because all four convergence slices implement the same bounded-run/effect-accounting runtime. Full Relation/Contract persistence, MCP discovery, adapter SDK, multi-Agent federation, and recovery/migration drills remain outside this spec.
+
+---
+
+# 47. Design closure
 
 Phase 4 turns ARCP from a continuity/control-plane foundation into a system that can safely begin doing work without a human typing every prompt.
 
-The intended meaning of "promptless" is narrow and operational:
+"Promptless" means:
 
 > an authorized event may start a bounded run.
 
@@ -2209,11 +1924,11 @@ It does **not** mean:
 
 > a wake grants unlimited action authority.
 
-The intended meaning of "autonomous" is also bounded:
+"Autonomous" means:
 
 > the run may deliberate and execute within explicitly resolved authority, policy, budget, approval, containment, and continuity constraints.
 
-The defining Phase 4 correctness property is therefore not "the Agent can act".
+The defining Phase 4 correctness property is not merely "the Agent can act".
 
 It is:
 
