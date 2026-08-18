@@ -45,13 +45,13 @@ describe('Phase 4 run budget', () => {
       max_wall_time_ms: 1_000,
     });
     ledger.consumeActiveWallTime(250);
-    expect(ledger.view().wall_time_ms.consumed).toBe(250);
+    expect(ledger.view().wall_time_ms!.consumed).toBe(250);
 
     // A persisted approval wait is not active execution time. Nothing changes
     // until the runtime explicitly reports another active segment.
-    expect(ledger.view().wall_time_ms.consumed).toBe(250);
+    expect(ledger.view().wall_time_ms!.consumed).toBe(250);
     ledger.consumeActiveWallTime(750);
-    expect(ledger.view().wall_time_ms.consumed).toBe(1_000);
+    expect(ledger.view().wall_time_ms!.consumed).toBe(1_000);
     expect(() => ledger.consumeActiveWallTime(1)).toThrowError(
       expect.objectContaining({ code: 'budget_exhausted' }),
     );
