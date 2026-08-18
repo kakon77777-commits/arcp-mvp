@@ -1,9 +1,9 @@
 name: phase3d-convergence-verify
 
 on:
-  push:
+  pull_request:
     branches:
-      - phase3-temporal-provenance-shared-instant
+      - master
 
 permissions:
   contents: read
