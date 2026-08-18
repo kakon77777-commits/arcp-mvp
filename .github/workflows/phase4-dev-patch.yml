@@ -1,0 +1,32 @@
+name: phase4-dev-patch
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phase4-promptless-bounded-runs
+      - name: Patch stale local run state after hydration
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('packages/workflow-core/src/orchestrator.ts')
+          s = p.read_text()
+          old = """    const context = await this.hydrateRun(run, input);\n    const latestCheckpoint = await this.options.store.getLatestCheckpoint(run.run_id);\n"""
+          new = """    const context = await this.hydrateRun(run, input);\n    run = (await this.options.store.getRun(run.run_id)) ?? run;\n    const latestCheckpoint = await this.options.store.getLatestCheckpoint(run.run_id);\n"""
+          if old in s:
+              p.write_text(s.replace(old, new, 1))
+      - name: Commit patch if changed
+        shell: bash
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/workflow-core/src/orchestrator.ts
+          git commit -m "fix: refresh run state after hydration"
+          git push origin HEAD:phase4-promptless-bounded-runs
