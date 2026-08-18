@@ -15,7 +15,7 @@ import type {
   RunCheckpoint,
   RunRecord,
 } from '@arcp/schema';
-import type { BudgetDimension } from './budget.js';
+import type { BudgetDimension, RunBudgetView } from './budget.js';
 import type {
   ActionAuthorityInput,
   ActionExecutionResult,
@@ -83,6 +83,7 @@ export interface RunStateStorePort {
   createRunIfAbsent(run: RunRecord): Promise<RunRecord>;
   getRun(runId: string): Promise<RunRecord | null>;
   updateRun(run: RunRecord, expectedFencingToken?: number): Promise<RunRecord>;
+  getBudgetView(runId: string): Promise<RunBudgetView>;
 
   saveCheckpoint(checkpoint: RunCheckpoint): Promise<void>;
   getLatestCheckpoint(runId: string): Promise<RunCheckpoint | null>;
