@@ -74,6 +74,9 @@ importers:
       '@arcp/schema':
         specifier: workspace:*
         version: link:../../arcp-schema
+      '@arcp/workflow-core':
+        specifier: workspace:*
+        version: link:../../workflow-core
 
   packages/adapters/ctcl:
     dependencies:
