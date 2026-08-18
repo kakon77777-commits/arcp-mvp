@@ -17,10 +17,37 @@ import {
   StaticWakeAuthorityResolver,
   deriveRunId,
   type ContextHydratorPort,
+  type ModelPort,
+  type ModelTurnProposal,
   type PolicyPort,
   type RunBudgetProviderPort,
 } from '@arcp/workflow-core';
 import { createFakeD1Database } from '../helpers/fake-d1-database.js';
+
+/** A ModelPort whose deliberate() call blocks until the test explicitly releases it. */
+class BlockingModelPort implements ModelPort {
+  private release: (() => void) | undefined;
+  private resolveStarted!: () => void;
+  private readonly startedSignal = new Promise<void>((resolve) => {
+    this.resolveStarted = resolve;
+  });
+
+  waitUntilStarted(): Promise<void> {
+    return this.startedSignal;
+  }
+
+  async deliberate(): Promise<ModelTurnProposal> {
+    this.resolveStarted();
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    return { actionIntents: [], stopReason: 'blocking-model-done', usage: {} };
+  }
+
+  releaseBlockedCall(): void {
+    this.release?.();
+  }
+}
 
 const migration1 = readFileSync(fileURLToPath(new URL('../../migrations/d1/0001_init.sql', import.meta.url)), 'utf-8');
 const migration2 = readFileSync(fileURLToPath(new URL('../../migrations/d1/0002_phase4_runs.sql', import.meta.url)), 'utf-8');
@@ -137,5 +164,59 @@ describe('Phase 4 deterministic DO + D1 integration', () => {
     expect(firstBody.result.run.run_id).toBe(runId);
     expect(secondBody.result.run.run_id).toBe(runId);
     expect(model.invocations).toHaveLength(1);
+  });
+
+  it('lets an emergency containment request complete while an advance call is still awaiting a slow model turn, instead of queuing behind it', async () => {
+    const db = createFakeD1Database(`${migration1}\n${migration2}`);
+    const metadata = new D1MetadataStore(db);
+    const runStore = new D1RunStateStore(db);
+    const blockingModel = new BlockingModelPort();
+    const engine = new BoundedRunOrchestrator({
+      store: runStore,
+      hydrator,
+      model: blockingModel,
+      wakeAuthority: new StaticWakeAuthorityResolver([{ requiredAuthority: 'schedule:do-d1', agentId }]),
+      actionAuthority: new StaticActionAuthorityResolver({ grants: [] }),
+      policy,
+      budgetProvider,
+      now: () => now,
+    });
+    const phase4 = new Phase4AgentCoordinatorCore(metadata, runStore, engine);
+    const handler = new AgentDurableObjectHandler(metadata, phase4);
+    const blockingWake: WakeRecord = {
+      schema: 'arcp/wake/0.1', wake_id: 'wake:do-d1:blocking', trigger_type: 'schedule', trigger_ref: 'schedule:do-d1',
+      required_authority: 'schedule:do-d1', revalidate_on_wake: true, idempotency_key: 'wake:key:do-d1:blocking',
+    };
+    const runId = deriveRunId(agentId, blockingWake.idempotency_key);
+    const runBase = `https://coordinator.internal/internal/v1/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}`;
+
+    const advancePromise = handler.fetch(new Request(`${runBase}/advance`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ run_id: runId, wake: blockingWake }),
+    }));
+
+    // Wait until advance() is genuinely stuck inside the model call, not just
+    // "hasn't been awaited yet" -- proves the containment request below races
+    // against real in-flight work, not an artifact of call ordering.
+    await blockingModel.waitUntilStarted();
+
+    const containmentsBase = `https://coordinator.internal/internal/v1/agents/${encodeURIComponent(agentId)}/containments`;
+    const containmentResponse = await handler.fetch(new Request(containmentsBase, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        schema: 'arcp/containment/0.1', containment_id: 'containment:emergency:1', agent_id: agentId,
+        scope: ['external-action:write'], reason: 'emergency test', authority_source: 'policy-authorized',
+        entered_at: now, expires_at: now, review_required: true, exit_conditions: ['review'], status: 'active',
+      }),
+    }));
+
+    expect(containmentResponse.status).toBe(202);
+    expect(await runStore.activeContainments(agentId)).toHaveLength(1);
+
+    blockingModel.releaseBlockedCall();
+    const advanceResponse = await advancePromise;
+    expect(advanceResponse.status).toBe(200);
   });
 });
