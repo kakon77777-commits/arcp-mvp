@@ -6,6 +6,7 @@ import type {
 import type { ApprovalGrant, ContainmentRecord, RunRecord } from '@arcp/schema';
 import {
   WorkflowError,
+  deriveRunId,
   type BoundedRunOrchestrator,
   type RunStateStorePort,
 } from '@arcp/workflow-core';
@@ -16,8 +17,9 @@ import { AgentDurableObjectCore } from './agent-durable-object-core.js';
  *
  * This class intentionally does not know any model/executor vendor. It owns
  * only the Durable Object side of Phase 4 coordination: Agent-scoped run
- * lookup, fresh fencing for resumes, exact approval persistence, containment
- * mutation, and delegation into the provider-neutral BoundedRunOrchestrator.
+ * lookup, deterministic first-run binding, fresh fencing for resumes, exact
+ * approval persistence, containment mutation, and delegation into the
+ * provider-neutral BoundedRunOrchestrator.
  */
 export class Phase4AgentCoordinatorCore extends AgentDurableObjectCore {
   constructor(
@@ -35,9 +37,17 @@ export class Phase4AgentCoordinatorCore extends AgentDurableObjectCore {
   }
 
   async advanceRun(agentId: string, input: AdvanceRunRequest): Promise<AdvanceRunResponse> {
-    const existing = input.run_id === undefined ? null : await this.getRun(agentId, input.run_id);
-    if (input.run_id !== undefined && existing === null) {
-      throw new WorkflowError('invalid_wake', `Agent-scoped resume run not found: ${input.run_id}`, false);
+    const requestedRunId = input.run_id;
+    const existing = requestedRunId === undefined ? null : await this.getRun(agentId, requestedRunId);
+
+    // A first wake can arrive through the same /runs/:run/advance contract by
+    // using the deterministic wake->run binding. Any other unknown run id is
+    // rejected, preventing a caller from manufacturing arbitrary run names.
+    const deterministicRunId = deriveRunId(agentId, input.wake.idempotency_key);
+    const startingNewRun = existing === null &&
+      (requestedRunId === undefined || requestedRunId === deterministicRunId);
+    if (existing === null && !startingNewRun) {
+      throw new WorkflowError('invalid_wake', `Agent-scoped run not found or not bound to this wake: ${requestedRunId}`, false);
     }
 
     const fencingToken = input.fencing_token ?? (existing ? existing.fencing_token + 1 : 1);
@@ -53,10 +63,13 @@ export class Phase4AgentCoordinatorCore extends AgentDurableObjectCore {
       agentId,
       wake: input.wake,
       fencingToken,
-      ...(input.run_id === undefined ? {} : { runId: input.run_id }),
+      ...(existing === null ? {} : { runId: existing.run_id }),
     });
     if (result.run.agent_id !== agentId) {
       throw new WorkflowError('invalid_persisted_state', 'orchestrator returned a run for another Agent', false);
+    }
+    if (startingNewRun && result.run.run_id !== deterministicRunId) {
+      throw new WorkflowError('invalid_persisted_state', 'orchestrator violated deterministic wake-to-run binding', false);
     }
 
     return {
