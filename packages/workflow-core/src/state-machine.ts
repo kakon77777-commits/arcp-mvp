@@ -4,7 +4,7 @@ const LEGAL_RUN_TRANSITIONS: Record<RunPhase, RunPhase[]> = {
   accepted: ['hydrating', 'contained', 'failed', 'dead-lettered'],
   hydrating: ['deliberating', 'contained', 'failed', 'dead-lettered'],
   deliberating: ['authorizing', 'committing', 'waiting', 'contained', 'completed', 'failed', 'dead-lettered'],
-  authorizing: ['deliberating', 'waiting-approval', 'executing', 'contained', 'completed', 'failed', 'dead-lettered'],
+  authorizing: ['deliberating', 'waiting-approval', 'waiting', 'executing', 'contained', 'completed', 'failed', 'dead-lettered'],
   'waiting-approval': ['authorizing', 'contained', 'failed', 'dead-lettered'],
   executing: ['deliberating', 'reconciling', 'committing', 'contained', 'failed', 'dead-lettered'],
   reconciling: ['deliberating', 'committing', 'waiting', 'contained', 'failed', 'dead-lettered'],
