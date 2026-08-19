@@ -7,6 +7,7 @@ This directory contains architecture-level governance constraints for ARCP and a
 1. [`ai-autonomy-relations-existence-coordination-framework-v0.1.md`](ai-autonomy-relations-existence-coordination-framework-v0.1.md) — base framework: Entity / Residence / Resource / Relation / Contract / Event, Standing Entity, authority boundaries, AI Steward, Post-Management architecture, Phase 4/5 implications.
 2. [`ai-autonomy-relations-existence-coordination-framework-v0.1.1-review-hardening.md`](ai-autonomy-relations-existence-coordination-framework-v0.1.1-review-hardening.md) — normative adversarial-review amendment. **If it conflicts with v0.1, v0.1.1 wins.**
 3. [`../../PHASE4_GOVERNANCE_INPUT.md`](../../PHASE4_GOVERNANCE_INPUT.md) — concise binding input that Phase 4 plans/implementations must cite.
+4. [`../../PHASE5_ENTRY_GATE.md`](../../PHASE5_ENTRY_GATE.md) — runtime clock/budget, policy identity, and production AuthN/AuthZ required before Phase 5 MCP capabilities go externally live; also records the Lares/Aletheia/Neo collaboration boundary and the "works as a tool, not a cage if more than a tool" architecture-review invariant.
 
 ## Upstream theory lineage
 

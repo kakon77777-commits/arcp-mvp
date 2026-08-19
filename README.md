@@ -14,6 +14,10 @@ Key design documents:
 Phase 4 is normatively constrained by [`PHASE4_GOVERNANCE_INPUT.md`](PHASE4_GOVERNANCE_INPUT.md)
 and the [AREC governance framework](docs/governance/README.md).
 
+**Before starting Phase 5**, read [`PHASE5_ENTRY_GATE.md`](PHASE5_ENTRY_GATE.md) —
+runtime clock/hard budget enforcement, immutable policy identity, and production
+AuthN/AuthZ are required before any MCP capability is externally activated.
+
 ## Status: Phase 4 — Promptless Bounded Runs
 
 - Phase 0 — schema, deterministic policy, coordinator and fake adapters: **done**.
