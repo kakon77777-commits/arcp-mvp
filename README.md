@@ -6,6 +6,7 @@ roadmap.
 
 Key design documents:
 
+- [`docs/theory/README.md`](docs/theory/README.md) — the 9-document theory/spec corpus and build roadmap this repo was built from
 - [`docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md`](docs/superpowers/specs/2026-08-17-phase2-pluggable-residence-storage-design.md)
 - [`docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md`](docs/superpowers/specs/2026-08-17-phase3-temporal-provenance-shared-instant-design.md)
 - [`docs/superpowers/specs/2026-08-18-phase4-promptless-bounded-runs-design.md`](docs/superpowers/specs/2026-08-18-phase4-promptless-bounded-runs-design.md)

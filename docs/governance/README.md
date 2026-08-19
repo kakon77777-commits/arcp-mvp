@@ -11,13 +11,13 @@ This directory contains architecture-level governance constraints for ARCP and a
 
 ## Upstream theory lineage
 
-AREC is an engineering-governance projection of the existing Residence/autonomy theory line, especially:
+AREC is an engineering-governance projection of the existing Residence/autonomy theory line, especially (all mirrored into this repo, see `../theory/README.md`):
 
-- `digital_residence_intelligent_continuity_ontology_v1.0.md`
-- `promptless_event_driven_network_native_agent_v1.0.md`
-- `digital_residence_rights_migration_refusal_governance_v1.0.md`
-- `cloud_sync_subjectivity_infrastructure_hybrid_agent_continuity_v1.0.md`
-- `autonomous_agi_spatiotemporal_residence_action_scaffold_v1.0.md`
+- [`../theory/digital_residence_intelligent_continuity_ontology_v1.0.md`](../theory/digital_residence_intelligent_continuity_ontology_v1.0.md)
+- [`../theory/promptless_event_driven_network_native_agent_v1.0.md`](../theory/promptless_event_driven_network_native_agent_v1.0.md)
+- [`../theory/digital_residence_rights_migration_refusal_governance_v1.0.md`](../theory/digital_residence_rights_migration_refusal_governance_v1.0.md)
+- [`../theory/cloud_sync_subjectivity_infrastructure_hybrid_agent_continuity_v1.0.md`](../theory/cloud_sync_subjectivity_infrastructure_hybrid_agent_continuity_v1.0.md)
+- [`../theory/autonomous_agi_spatiotemporal_residence_action_scaffold_v1.0.md`](../theory/autonomous_agi_spatiotemporal_residence_action_scaffold_v1.0.md)
 
 The Tier 0 → Tier 1 Standing Entity distinction is a coarse operational projection for relation/contract engineering, not a replacement for the finer R0→R1 and later maturity logic in the rights/migration governance work.
 
