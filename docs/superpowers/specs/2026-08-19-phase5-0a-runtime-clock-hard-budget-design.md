@@ -23,7 +23,7 @@ The standing architecture-review invariant remains:
 
 > **Works if AI remains a tool, AND does not become a cage if AI becomes more than a tool.**
 
-Phase 5.0A therefore treats budget as Resource governance only:
+Phase 5.0A treats budget as Resource governance only:
 
 ```text
 budget authority != identity authority
@@ -84,7 +84,7 @@ provider call
 
 That is accounting, not a hard execution bound.
 
-A concrete failure is:
+Concrete failure:
 
 ```text
 remaining model_output_tokens = 1_000
@@ -93,12 +93,13 @@ provider returns 4_000 output tokens
 ARCP notices 3_000 tokens of overspend after the fact
 ```
 
-Phase 5 cannot expose general MCP capabilities on top of this assumption. 5.0A changes the order to:
+5.0A changes the order to:
 
 ```text
 read durable budget
   -> atomically reserve a bounded envelope
   -> derive host-enforced provider limits
+  -> record the durable pre-call boundary
   -> provider call
   -> settle actual usage
   -> release unused reservation
@@ -119,7 +120,8 @@ The central rule is:
 - durable `getBudgetView(runId)` on `RunStateStorePort`;
 - a complete, non-partial budget view for all declared dimensions;
 - generic durable multi-dimensional Budget Envelopes;
-- atomic all-or-nothing envelope reservation;
+- atomic all-or-nothing envelope reservation and settlement;
+- durable pre-call model invocation lifecycle (`reserved -> calling -> terminal/unknown`);
 - `ModelCallLimits` as host-enforced call limits distinct from informational model context;
 - provider-side hard ceilings or pre-network fail-closed behavior;
 - crash-safe settlement/release/recovery semantics for budget envelopes;
@@ -134,7 +136,7 @@ The central rule is:
 - MCP server or capability discovery (Phase 5.1);
 - typed authority targets (Phase 5.1);
 - a provider-vendor implementation for a live model;
-- pricing discovery from the network;
+- live pricing discovery;
 - a generic distributed resource scheduler;
 - making all ten dimensions appear enforced when no real consumption boundary exists;
 - using CTCL or wall-clock timestamps as the runtime duration clock.
@@ -151,25 +153,25 @@ The central rule is:
 budgetView: RunBudgetView
 ```
 
-but the Phase 4 orchestrator currently supplies an empty object. This means the model cannot receive a truthful live view even if a caller wanted to provide one.
+but the Phase 4 orchestrator currently supplies `{}`.
 
 More importantly, `budgetView` is informational state. It is not itself a permission or execution ceiling.
 
 ## 3.2 `RunStateStorePort` cannot read the budget ledger
 
-The in-memory store has an internal `budgetView(runId)` helper, but it is not in `RunStateStorePort`. `D1RunStateStore` has no corresponding read method.
+The in-memory store has an internal `budgetView(runId)` helper, but it is not part of `RunStateStorePort`. `D1RunStateStore` has no corresponding read method.
 
 Therefore this path does not currently exist:
 
 ```text
 D1 ledger
   -> orchestrator
-  -> live remaining budget
+  -> live budget snapshot
 ```
 
 ## 3.3 Provider limits are not a `ModelPort` contract
 
-Current model interface:
+Current interface:
 
 ```ts
 interface ModelPort {
@@ -179,11 +181,25 @@ interface ModelPort {
 
 There is no host-enforced ceiling argument. A prompt instruction such as “do not use more than 1000 tokens” is not an execution control.
 
-## 3.4 `max_wall_time_ms` has no valid clock source
+## 3.4 `max_wall_time_ms` has no valid duration clock
 
-The orchestrator's current `now()` returns `InstantRef`. That value exists for provenance and temporal evidence. Phase 3 deliberately forbids using it as the coordinator's lease/fencing ordering source.
+The orchestrator's current `now()` returns `InstantRef`. That value exists for provenance and temporal evidence. Reusing it for elapsed runtime would collapse two semantic domains that Phase 3 deliberately separated.
 
-Reusing it for elapsed runtime would collapse two separate semantic domains.
+## 3.5 Model invocation statuses exist but are not a durable call boundary
+
+`ModelInvocationStatus` already includes:
+
+```text
+reserved
+calling
+succeeded
+failed
+unknown
+```
+
+but the current store API only appends invocation records after or around outcomes; there is no authoritative persisted transition proving whether provider I/O had definitely not begun or may already have begun.
+
+Without this distinction, an abandoned budget envelope cannot safely decide whether it may be released.
 
 ---
 
@@ -200,17 +216,12 @@ getBudgetView
 -> provider call
 ```
 
-Advantages:
-
-- smallest code change;
-- reuses current per-dimension model reservation methods.
-
 Rejected because:
 
 - a crash can happen after reserving some dimensions but before others;
 - one call does not obtain one coherent resource grant;
 - retries need to reconstruct which subset was reserved;
-- a stale read can cause partial local reasoning even though each individual reservation is safe.
+- resource authority becomes fragmented across multiple records.
 
 ## Option B — Durable multi-dimensional Budget Envelope
 
@@ -220,11 +231,12 @@ getBudgetView
 -> one atomic reserve operation for all dimensions
 -> receive granted envelope
 -> derive call limits from the grant
+-> durable calling boundary
 -> provider call
 -> settle actual usage
 ```
 
-Selected.
+**Selected.**
 
 Advantages:
 
@@ -232,7 +244,7 @@ Advantages:
 - reservation is all-or-nothing;
 - recovery has a single durable identifier;
 - host limits derive from granted resources, not from a stale advisory read;
-- the same primitive can later be reused for tools/network/storage.
+- the primitive can later be reused for tools/network/storage.
 
 ## Option C — Let each provider adapter read the store and self-budget
 
@@ -247,7 +259,7 @@ provider adapter
   -> becomes part policy engine / scheduler
 ```
 
-Adapters may translate host limits into provider-specific request parameters, but they must not acquire authority to choose the host's budget.
+Adapters may translate host limits into provider-specific request parameters, but they must not acquire authority to choose or enlarge the host's budget.
 
 ---
 
@@ -271,7 +283,7 @@ export interface MonotonicClockPort {
 
 - supplies `InstantRef` for persisted provenance fields;
 - may be CTCL-backed, local-unverified, deterministic fake, or another evidence source;
-- is allowed to appear in persisted records;
+- may appear in persisted records;
 - is never used to compute duration, lease order, or fencing order.
 
 `MonotonicClockPort`:
@@ -289,8 +301,6 @@ Wrong:
 persist performance.now() = 149239.2
 ```
 
-That number has no portable meaning after a restart.
-
 Correct:
 
 ```text
@@ -300,13 +310,13 @@ settle actual wall_time_ms = 8_421
 release 11_579
 ```
 
-Only the amount is durable.
+Only resource amounts are durable.
 
 ## 5.3 Active wall time
 
 `max_wall_time_ms` means cumulative **active orchestration execution time**.
 
-It includes time spent inside an active `advance()` execution, including waits on active provider calls such as model or executor operations.
+It includes time spent inside an active `advance()` execution, including waits on active provider calls.
 
 It excludes time while a run is durably parked in:
 
@@ -328,16 +338,25 @@ Conceptually:
 advance starts
 -> reserve remaining wall_time_ms in advance envelope
 -> t0 = monotonicClock.nowMs()
--> perform active orchestration
+-> active orchestration
+-> before each provider/effect segment, verify remaining granted time > 0
+-> pass remaining relative duration to bounded provider ports
 -> t1 = monotonicClock.nowMs()
--> settle min(t1 - t0, reserved amount)
--> release unused wall time
+-> settle exact elapsed when elapsed <= reserved amount
 -> return / persist waiting / terminal state
 ```
 
-The reservation is intentionally conservative. Because Phase 4 advances are serialized per run, reserving the available wall-time remainder does not reduce useful concurrency inside one run.
+If observed elapsed exceeds the reservation, ARCP **must not clamp it with `min()` and pretend the bound held**. That is a runtime-limit contract violation:
 
-If the active segment cannot obtain positive wall-time budget, it stops before beginning another external/provider segment.
+```text
+elapsed > reserved
+-> record runtime_wall_time_exhausted / contract violation
+-> consume at least the entire reserved amount
+-> do not release any wall-time remainder
+-> fail closed for further active work in that run
+```
+
+The reservation is intentionally conservative. Because Phase 4 advances are serialized per run, reserving the available wall-time remainder does not reduce useful same-run concurrency.
 
 ---
 
@@ -353,21 +372,25 @@ getBudgetView(runId: string): Promise<RunBudgetView>;
 
 ## 6.2 Budget view becomes complete
 
-The current type is a `Partial<Record<...>>`. 5.0A changes the authoritative store return value to include all declared dimensions.
-
-Preferred shape:
+The current type is a `Partial<Record<...>>`. 5.0A changes the authoritative store return value to include all declared dimensions:
 
 ```ts
 export type RunBudgetView = Record<BudgetDimension, BudgetCounterView>;
 ```
 
-Every run initializes every dimension, including optional model limits represented as a numeric zero when disabled by the resolved budget profile.
+Every run initializes every dimension.
 
-Missing ledger rows are `invalid_persisted_state`, not silently absent budget.
+For optional model limits, an omitted resolved `RunBudgetSpec` field becomes a numeric **zero**, preserving the existing rule:
+
+```text
+missing budget != unlimited budget
+```
+
+A zero limit means no consumption is authorized for that dimension. It is never interpreted as “unbounded” or silently omitted from hard-limit checks.
+
+Missing ledger rows are `invalid_persisted_state`.
 
 ## 6.3 Counter semantics
-
-For each dimension:
 
 ```ts
 interface BudgetCounterView {
@@ -384,11 +407,11 @@ Available amount is derived:
 available = max(0, limit - consumed - reserved)
 ```
 
-`released` is cumulative audit information and is not subtracted again when computing availability.
+`released` is cumulative audit information and is not subtracted again.
 
 ## 6.4 D1 read semantics
 
-D1 returns one consistent ledger snapshot for the run. The authoritative reservation operation still rechecks limits atomically; `getBudgetView()` is used for planning and informational model context, not as the final concurrency guard.
+D1 returns one consistent ledger snapshot for the run. The authoritative reservation operation still rechecks limits atomically.
 
 Therefore:
 
@@ -396,6 +419,8 @@ Therefore:
 budget view can become stale
 atomic reserve cannot trust the old view
 ```
+
+`getBudgetView()` is for planning and informational model context; it is not the concurrency guard.
 
 ---
 
@@ -440,14 +465,14 @@ export interface BudgetEnvelopeRecord {
 }
 ```
 
-Envelope IDs are deterministic for retryable logical segments where possible, for example:
+Envelope IDs are deterministic for retryable logical segments where possible, using canonical structured hashing rather than delimiter-concatenated identity.
+
+Examples:
 
 ```text
-advance: run_id + fencing_token
-model-call: run_id + turn_index
+advance envelope = hash(run_id, fencing_token, kind=advance)
+model envelope = hash(run_id, turn_index, kind=model-call)
 ```
-
-using canonical structured hashing, never delimiter-concatenated security identity.
 
 ## 7.3 Generic port operations
 
@@ -466,7 +491,7 @@ reserveBudgetEnvelope(input: {
 settleBudgetEnvelope(input: {
   runId: string;
   envelopeId: string;
-  actuals: Partial<Record<BudgetDimension, number>>;
+  actuals: Array<{ dimension: BudgetDimension; amount: number }>;
   settledAt: InstantRef;
 }): Promise<BudgetEnvelopeRecord>;
 
@@ -479,7 +504,20 @@ releaseBudgetEnvelope(input: {
 getBudgetEnvelope(envelopeId: string): Promise<BudgetEnvelopeRecord | null>;
 ```
 
-Existing Phase 4 `reserveModelBudget` / `settleModelBudget` may remain temporarily for compatibility during migration, but the orchestrator must stop using them for new model calls once 5.0A lands.
+Settlement requires an exact actual-value entry for **every reserved dimension**. Missing actuals cannot silently become zero.
+
+For a model-call envelope this means, for example:
+
+```text
+turns -> actual 1
+input tokens -> authoritative reported/reconciled actual
+output tokens -> authoritative reported/reconciled actual
+cost -> authoritative reported/reconciled actual
+```
+
+If an actual cannot be established, the envelope moves to `recovery-required` instead of normal settlement.
+
+Existing Phase 4 `reserveModelBudget` / `settleModelBudget` may remain temporarily for compatibility, but the orchestrator must stop using them for new model calls once 5.0A lands.
 
 ## 7.4 Atomic reservation invariant
 
@@ -491,7 +529,7 @@ OR
 NONE reserve
 ```
 
-Never:
+Never leave:
 
 ```text
 turns reserved
@@ -499,9 +537,19 @@ output tokens reserved
 cost reservation failed
 ```
 
-with the first two left applied as a partially-created call grant.
+## 7.5 Atomic settlement invariant
 
-## 7.5 D1 storage
+For a normally settled envelope:
+
+```text
+ALL reserved dimensions settle/release remainder
+OR
+NONE transition to settled
+```
+
+No subset may settle independently under one envelope.
+
+## 7.6 D1 storage
 
 Add a durable envelope table, conceptually:
 
@@ -528,30 +576,94 @@ The guard rejects:
 - duplicate dimensions inside one envelope;
 - `consumed + reserved + requested > limit` for any item;
 - stale fencing token;
-- envelope ID collision with different content.
+- structurally invalid envelope data.
 
 If any item fails, the statement aborts and no ledger row is changed.
 
-Settlement similarly uses one status-changing statement plus triggers so all dimensions settle together.
+An idempotent retry with the same envelope ID and same canonical content returns the existing envelope. Same ID with different content is an `invalid_persisted_state` / envelope conflict.
 
-## 7.6 In-memory parity
+Settlement uses one status-changing statement plus validation/settlement triggers so all dimensions move together.
+
+## 7.7 In-memory parity
 
 `InMemoryRunStateStore` implements the same semantics under one synchronous mutation boundary.
 
-A contract/parity test suite must run the same envelope fixtures against:
+A contract/parity suite runs the same envelope fixtures against:
 
 ```text
 InMemoryRunStateStore
 D1RunStateStore on node:sqlite-compatible semantics
 ```
 
-The D1 migration itself remains the normative SQL behavior.
+The D1 migration remains the normative persisted SQL behavior.
 
 ---
 
-# 8. Model call resource flow
+# 8. Durable model-call boundary
 
-## 8.1 Model budget envelope
+## 8.1 Why envelope state alone is not enough
+
+An envelope can tell us “resources were reserved,” but not whether a crash happened:
+
+```text
+before provider I/O
+or
+after provider I/O began
+```
+
+That distinction decides whether releasing the reservation is safe.
+
+## 8.2 Promote existing invocation statuses to a real persisted lifecycle
+
+Before provider I/O:
+
+```text
+reserve model-call envelope
+-> create ModelInvocationRecord(status=reserved, budget_envelope_id=...)
+-> adapter performs local preflight only
+-> durable transition invocation status: reserved -> calling
+-> provider I/O may begin
+```
+
+After return/failure:
+
+```text
+calling -> succeeded | failed | unknown
+```
+
+Required store operations are conceptually:
+
+```ts
+createModelInvocation(record): Promise<ModelInvocationRecord>;
+getModelInvocation(invocationId): Promise<ModelInvocationRecord | null>;
+updateModelInvocationStatus(invocationId, expectedStatus, nextRecord): Promise<ModelInvocationRecord>;
+```
+
+The exact method names may differ, but the transition must be durable and compare-and-set/idempotent enough that a stale worker cannot move a completed call backward.
+
+## 8.3 Recovery meaning
+
+```text
+invocation=reserved
+-> provider I/O definitely did not cross the durable calling boundary
+-> envelope may be safely released after normal validation
+
+invocation=calling
+-> provider may have consumed resources
+-> envelope must not be released as zero
+-> reconcile usage if possible, otherwise conservatively consume reserved maxima
+
+invocation=succeeded/failed/unknown
+-> follow recorded/reconciled usage semantics
+```
+
+The durable `calling` transition must occur immediately before provider I/O and after all local limit checks that can fail without network/provider effects.
+
+---
+
+# 9. Model call resource flow
+
+## 9.1 Model budget envelope
 
 Before each model call the orchestrator obtains a live budget view and requests one `model-call` envelope covering:
 
@@ -562,39 +674,41 @@ model_output_tokens = currently available amount
 model_cost_micros = currently available amount
 ```
 
-Zero or disabled dimensions are handled explicitly:
-
-- `turns <= 0` => stop with budget exhausted;
-- `model_output_tokens <= 0` when output budget is enabled => no model call;
-- a disabled optional model dimension is omitted from hard-limit derivation only when the resolved budget profile explicitly disables that dimension, not because the row is missing.
-
-The envelope request is conservative: the model call temporarily reserves the available remainder for those dimensions. Sequential execution means this does not reduce useful same-run concurrency.
-
-## 8.2 Informational `budgetView`
-
-After the authoritative envelope is granted, the orchestrator may pass a truthful budget view to `ModelTurnInput`.
-
-This is informational only.
-
-The model may use it to make better planning decisions, but:
+Because omitted optional model limits resolve to zero:
 
 ```text
-model sees budget
+available model dimension = 0
+-> no consumption authorized
+-> no provider call that would consume that dimension
+```
+
+There is no “undefined means unlimited” escape hatch.
+
+The envelope request is conservative: the call temporarily reserves the available remainder for those dimensions. Sequential execution means this does not reduce useful same-run concurrency.
+
+## 9.2 Informational `budgetView`
+
+`ModelTurnInput.budgetView` is populated from real durable ledger state, not `{}`.
+
+The exact snapshot point is documented: the orchestrator may pass the post-reservation view so the model sees truthful current `reserved/consumed/limit` counters. The current call's actual enforceable grant is represented by the separate `ModelCallLimits`; a model never needs to infer authority from the advisory view.
+
+```text
+model sees budget state
 != model controls budget
 ```
 
-## 8.3 Host-enforced `ModelCallLimits`
+## 9.3 Host-enforced `ModelCallLimits`
 
 This design refines the entry-gate draft name `activeDeadlineMs` to avoid ambiguity about absolute monotonic origins.
 
-The final interface is:
+Final interface:
 
 ```ts
 export interface ModelCallLimits {
   maxOutputTokens: number;
-  maxInputTokens?: number;
-  maxCostMicros?: number;
-  maxActiveDurationMs?: number;
+  maxInputTokens: number;
+  maxCostMicros: number;
+  maxActiveDurationMs: number;
 }
 
 export interface ModelPort {
@@ -605,9 +719,11 @@ export interface ModelPort {
 }
 ```
 
+All four limits are finite numeric values for a model call. A zero value means the call is not authorized to consume that resource and therefore must not cross provider I/O.
+
 `maxActiveDurationMs` is a **relative duration ceiling from call entry**, never a persisted or globally-comparable deadline timestamp.
 
-This is intentionally distinct from:
+It is intentionally distinct from:
 
 ```text
 InstantRef
@@ -616,7 +732,7 @@ lease valid_until
 fencing token
 ```
 
-## 8.4 Limit derivation
+## 9.4 Limit derivation
 
 `ModelCallLimits` derives only from resources already granted by durable envelopes.
 
@@ -639,13 +755,13 @@ ModelCallLimits:
 
 The orchestrator must never hand a provider a larger limit than the durable grant.
 
-## 8.5 Provider adapter contract
+## 9.5 Provider adapter contract
 
-A `ModelPort` implementation must validate and enforce all finite supplied limits **before external provider I/O begins**.
+A `ModelPort` implementation must validate and enforce all supplied limits **before external provider I/O begins**.
 
 Allowed implementation methods include:
 
-- native provider `max_output_tokens` / equivalent;
+- native provider output-token ceiling;
 - exact provider tokenizer for input bound;
 - a mathematically conservative tokenizer upper bound;
 - configured, versioned worst-case price bounds to turn `maxCostMicros` into stricter token limits;
@@ -657,32 +773,32 @@ Not sufficient:
 - average historical token use;
 - optimistic price estimates;
 - checking usage only after the call;
-- a timeout that does not actually prevent/abort the provider request while claiming hard enforcement.
+- a timeout wrapper that does not actually prevent/abort provider resource consumption while claiming hard enforcement.
 
-If the adapter cannot prove a finite supplied limit can be enforced, it must fail before provider network I/O with a provider-neutral error such as:
+If the adapter cannot prove a supplied finite limit can be enforced, it fails **before the durable `calling` transition and before provider I/O** with a provider-neutral error such as:
 
 ```text
 model_limit_unsupported
 ```
 
-## 8.6 Deterministic adapter
+## 9.6 Deterministic adapter
 
 `DeterministicModelAdapter` records both inputs and limits.
 
-It must support tests proving:
+It supports tests proving:
 
 ```text
 host grants 1000 output tokens
 -> adapter never observes a limit > 1000
 ```
 
-and simulated unsupported-limit failures must occur with zero fake-provider calls.
+and simulated unsupported-limit failures occur with zero fake-provider calls.
 
 ---
 
-# 9. Model input-token enforcement
+# 10. Input-token enforcement
 
-Input usage is special because the final provider payload may include adapter-specific wrappers not visible to the orchestrator.
+The final provider payload may include adapter-specific wrappers not visible to the orchestrator.
 
 Therefore:
 
@@ -690,24 +806,24 @@ Therefore:
 orchestrator grants maxInputTokens
 adapter serializes final request
 adapter proves serialized request <= maxInputTokens
-only then provider I/O may begin
+only then durable calling boundary + provider I/O
 ```
 
 The orchestrator must not pretend it knows provider tokenization merely because it knows the structured `ModelTurnInput` object.
 
-A live adapter that has no exact tokenizer may use only a documented conservative upper-bound method. An unproven heuristic is not a hard cap.
+A live adapter with no exact tokenizer may use only a documented conservative upper-bound method. An unproven heuristic is not a hard cap.
 
 ---
 
-# 10. Cost enforcement
+# 11. Cost enforcement
 
-## 10.1 Cost is a pre-call maximum, not a post-call invoice check
+## 11.1 Cost is a pre-call maximum
 
 `maxCostMicros` means:
 
-> the adapter must construct a request whose worst-case billable cost is no greater than this amount under its configured pricing bound.
+> the adapter must construct a request whose worst-case billable cost is no greater than this amount under its configured deterministic pricing bound.
 
-## 10.2 Adapter-owned translation, host-owned authority
+## 11.2 Adapter-owned translation, host-owned authority
 
 The host chooses:
 
@@ -715,32 +831,34 @@ The host chooses:
 maxCostMicros = durable granted amount
 ```
 
-The adapter may know provider-specific pricing and therefore translate that host ceiling into stricter input/output token limits.
+The adapter may know provider-specific pricing and translate that host ceiling into stricter input/output token limits.
 
-This does not grant the adapter authority to enlarge the budget.
+It may only reduce the provider request. It cannot enlarge the host grant.
 
-## 10.3 Pricing source
+## 11.3 Pricing source
 
 5.0A does not add live network pricing discovery.
 
-A future live provider adapter must use a configured/versioned pricing bound or another deterministic source known before the call.
+A future live provider adapter uses a configured/versioned worst-case pricing bound or another deterministic source known before the call.
 
-If the adapter cannot establish a safe upper bound, it fails closed before provider I/O.
+If the adapter cannot establish a safe upper bound, it fails closed before the `calling` transition and provider I/O.
 
 ---
 
-# 11. Settlement
+# 12. Normal settlement
 
-## 11.1 Successful model call
+## 12.1 Successful model call
 
 After `ModelPort.deliberate()` returns a valid proposal:
 
 ```text
 proposal.usage
--> validate usage is finite/non-negative
--> verify actual <= envelope reservation for each reported dimension
--> settle model-call envelope
--> release unused resources
+-> validate finite/non-negative
+-> obtain actual for every reserved model dimension
+-> verify actual <= reservation
+-> transition invocation to succeeded
+-> atomically settle model-call envelope
+-> release unused reservation
 ```
 
 Example:
@@ -749,63 +867,66 @@ Example:
 reserved output tokens = 1000
 actual output tokens = 237
 
+reserved -= 1000
 consumed += 237
 released += 763
-reserved -= 1000
 ```
 
-## 11.2 Missing usage
+## 12.2 Missing usage
 
-For a dimension that was hard-enforced but the provider fails to report final actual use:
+For a hard-enforced dimension whose final actual use is missing:
 
 - do not settle it as zero;
 - do not silently release the reservation;
-- mark the envelope `recovery-required` or conservatively settle the reserved maximum according to the adapter's declared reconciliation capability.
+- mark invocation/envelope recovery-required or unknown;
+- reconcile authoritative usage if the adapter supports it;
+- otherwise conservatively resolve to the reserved upper bound.
 
-Hard enforcement and accounting are separate problems. Lack of a receipt does not prove zero consumption.
+Hard enforcement and exact accounting are separate problems. Lack of a receipt does not prove zero consumption.
 
-## 11.3 Reported usage above reservation
+## 12.3 Reported usage above reservation
 
 If a provider reports actual usage greater than its granted envelope, this is a provider/adapter contract violation.
 
-The call has already occurred, so ARCP must:
+ARCP must:
 
 - preserve the reported evidence;
-- mark the invocation/envelope as a contract violation;
+- mark the invocation/envelope as violated/recovery-required;
 - not erase the overspend;
-- fail closed for future calls through that adapter until operator/review policy allows otherwise.
-
-The budget ledger must not be forced negative merely to make the numbers fit.
+- not force the budget ledger negative merely to make the numbers fit;
+- fail closed for future calls through that adapter until explicit review/recovery policy resolves it.
 
 ---
 
-# 12. Crash semantics
+# 13. Crash semantics
 
-## 12.1 Crash before envelope reserve
+## 13.1 Crash before envelope reserve
 
 No resources are reserved. Safe to retry.
 
-## 12.2 Crash after envelope reserve but before provider I/O
+## 13.2 Crash after envelope reserve, invocation still `reserved`
 
-The envelope remains durable and reserved.
+Provider I/O definitely did not cross the durable call boundary.
 
-On recovery, if ARCP can prove provider I/O never began, the envelope may be released.
+After validating the same logical invocation/envelope, recovery may release the envelope and retry.
 
-Otherwise it remains conservative until reconciliation policy resolves it.
+## 13.3 Crash after invocation becomes `calling`
 
-## 12.3 Crash during/after provider I/O before settlement
+Provider may have consumed resources.
 
 The envelope remains reserved.
 
-The system must not assume zero usage.
+For providers with authoritative usage reconciliation, settle reconciled actuals.
 
-For provider resources with no usage-reconciliation API, the safe default is to consume the reserved upper bound when resolving the abandoned call.
+Without such reconciliation, the safe default is to consume the reserved upper bounds rather than assume zero.
 
-For providers that can return authoritative usage for the specific invocation, reconciliation may settle the actual amount.
+## 13.4 Crash after provider returns but before settlement
 
-## 12.4 Wall-time crash semantics
+The invocation outcome/usage record and envelope lifecycle determine recovery. If exact usage was durably recorded, settle from that evidence. If not, treat it as unknown consumption.
 
-A persisted monotonic timestamp is forbidden, so the system cannot reconstruct exact active elapsed time after process death.
+## 13.5 Wall-time crash semantics
+
+A persisted monotonic timestamp is forbidden, so exact elapsed time cannot be reconstructed after process death.
 
 The conservative recovery rule is:
 
@@ -813,18 +934,18 @@ The conservative recovery rule is:
 unsettled active wall-time reservation
 -> exact elapsed unknown
 -> do not release as zero
--> resolve to reserved upper bound unless stronger local evidence exists
+-> resolve to reserved upper bound unless stronger local durable evidence exists
 ```
 
 This may consume more budget than actually used, but it cannot allow an unbounded run through optimistic accounting.
 
 ---
 
-# 13. Wall-time enforcement inside provider calls
+# 14. Wall-time enforcement inside calls
 
-An advance-level wall-time envelope grants the total remaining active time for that advance.
+The advance-level wall-time envelope grants the total active time available for that advance.
 
-Before each provider/executor segment:
+Before each provider/effect segment:
 
 ```text
 elapsed_so_far = monotonicNow - advanceStart
@@ -833,17 +954,17 @@ remaining_granted_wall_time = advanceReserved - elapsed_so_far
 
 If non-positive, do not start another external/provider segment.
 
-The relative remaining amount is passed as the call's active-duration limit where that port supports it.
+For model calls, the positive relative remainder becomes `ModelCallLimits.maxActiveDurationMs`.
 
-For model calls this is `ModelCallLimits.maxActiveDurationMs`.
+A ModelPort that cannot enforce/abort within that duration cannot claim hard wall-time enforcement and must fail before provider I/O.
 
-Phase 5.0A may add an equivalent execution-limit argument to `ActionExecutorPort` only if required to make the existing Phase 4 external-action path honestly wall-time bounded. If the executor port cannot abort/limit the active call, documentation must say wall-time is host-gated before call but not yet a hard provider cancellation boundary for that adapter. Do not overclaim.
+The existing `ActionExecutorPort` remains governed by Phase 4's claim-before-effect semantics. If 5.0A implementation adds an equivalent action-call duration limit, it must be tested as a real abort/provider bound. Otherwise documentation must classify executor-call wall time honestly rather than claiming a hard cancellation boundary that does not exist.
 
 ---
 
-# 14. Remaining budget dimensions (A4)
+# 15. Remaining budget dimensions (A4)
 
-5.0A distinguishes three statuses:
+5.0A uses three statuses:
 
 ```text
 HARD_ENFORCED
@@ -851,40 +972,40 @@ ACCOUNTED_ONLY
 DECLARED_NOT_APPLICABLE_YET
 ```
 
-The implementation/documentation must name the status of every dimension.
+Every dimension must have an explicit status.
 
 Target after 5.0A:
 
 | Dimension | Target status | Notes |
 |---|---|---|
 | `turns` | HARD_ENFORCED | included in model-call envelope |
-| `wall_time_ms` | HARD_ENFORCED for orchestration start/ModelPort boundary | monotonic advance envelope; adapter must enforce model duration limit |
+| `wall_time_ms` | HARD_ENFORCED for active orchestration start + ModelPort boundary | monotonic advance envelope; model adapter must enforce duration |
 | `model_input_tokens` | HARD_ENFORCED | adapter preflight/tokenizer bound |
 | `model_output_tokens` | HARD_ENFORCED | native or stricter provider request ceiling |
-| `model_cost_micros` | HARD_ENFORCED when adapter has safe price bound | otherwise provider call fails closed |
+| `model_cost_micros` | HARD_ENFORCED when adapter has deterministic safe price bound | otherwise model call fails closed |
 | `external_actions` | HARD_ENFORCED | existing claim-before-effect path |
 | `tool_calls` | DECLARED_NOT_APPLICABLE_YET | no Phase 5 tool capability boundary exists yet |
-| `storage_writes` | ACCOUNTED_ONLY or DECLARED_NOT_APPLICABLE_YET | do not invent a count without a defined storage operation boundary |
-| `network_requests` | DECLARED_NOT_APPLICABLE_YET | adapter SDK must declare network consumption semantics in Phase 5 |
+| `storage_writes` | ACCOUNTED_ONLY or DECLARED_NOT_APPLICABLE_YET | do not invent a count without a defined operation boundary |
+| `network_requests` | DECLARED_NOT_APPLICABLE_YET | adapter SDK must define network consumption semantics |
 | `recursive_wakes` | DECLARED_NOT_APPLICABLE_YET | no self-triggering recursive-wake runtime exists yet |
 
-If implementation evidence cannot support a target HARD_ENFORCED classification, the documentation must downgrade it rather than weaken the definition of “hard enforced.”
+If implementation evidence cannot support a target HARD_ENFORCED classification, documentation downgrades it rather than weakening the definition of “hard enforced.”
 
 ---
 
-# 15. Fencing and concurrency
+# 16. Fencing and concurrency
 
-## 15.1 Envelope reservation requires current fencing
+## 16.1 Envelope reservation requires current fencing
 
 Every reservation request includes the run's current fencing token.
 
 D1/in-memory stores reject stale fencing before granting resources.
 
-## 15.2 Budget view is advisory under concurrency
+## 16.2 Budget view is advisory under concurrency
 
-Even though per-run `advance` requests are serialized at the Durable Object boundary, generic store semantics must not rely on that fact.
+Generic store semantics must not rely only on the Durable Object's per-run advance queue.
 
-Therefore:
+Example:
 
 ```text
 getBudgetView says 1000 available
@@ -895,17 +1016,15 @@ atomic reserve rejects
 
 No stale read can force overspend.
 
-## 15.3 Containment remains preemptive
-
-The Phase 4 follow-up intentionally queues only `advance` requests, not containment/approval/read traffic.
+## 16.3 Containment remains preemptive
 
 5.0A must not reintroduce a fetch-wide queue through budget locking.
 
-A containment can still become durable while an advance is awaiting a model call. The next action/effect boundary sees it and blocks new effects according to Phase 4 containment semantics.
+Containment/approval/read requests continue to bypass the advance queue. A containment may become durable while an advance awaits a model call; later action/effect boundaries re-read containment according to Phase 4 semantics.
 
 ---
 
-# 16. Error model
+# 17. Error model
 
 Add provider-neutral errors where needed:
 
@@ -920,80 +1039,93 @@ runtime_wall_time_exhausted
 
 Existing `budget_exhausted`, `stale_fencing_token`, `invalid_persisted_state`, and model/provider errors remain valid.
 
-Every error path must preserve whether:
+Every error path preserves whether:
 
-- a provider call definitely did not begin;
-- a provider call may have begun;
+- provider I/O definitely did not begin;
+- provider I/O may have begun;
 - resource use is known;
 - resource use is unknown;
 - a reservation is still held.
 
 ---
 
-# 17. Model invocation records
+# 18. Model invocation schema/store changes
 
 `ModelInvocationRecord.budget_reservation_id` currently assumes one reservation ID.
 
-5.0A reinterprets/migrates this field to reference the `model-call` Budget Envelope ID, or introduces a clearly named `budget_envelope_id` field while retaining the old field only for schema compatibility.
+5.0A either:
 
-The chosen schema must make one thing unambiguous:
+1. introduces `budget_envelope_id` and retains `budget_reservation_id` only for backward schema compatibility; or
+2. explicitly migrates the meaning of the old field.
+
+**Selected semantic requirement:** the schema must have an unambiguous `budget_envelope_id` for new 5.0A records. The old field may remain optional for reading Phase 4 records but must not be the canonical new meaning.
+
+One logical model invocation maps to one logical multi-dimensional model-call envelope:
 
 ```text
-one logical model invocation
--> one logical multi-dimensional model budget envelope
+ModelInvocationRecord
+  -> budget_envelope_id
+  -> BudgetEnvelopeRecord(kind=model-call)
 ```
 
-A separate advance wall-time envelope may also exist for the enclosing active segment.
+The enclosing advance wall-time envelope is separate.
+
+The store must support durable invocation lifecycle transitions instead of append-only outcome recording.
 
 ---
 
-# 18. D1 migration strategy
+# 19. D1 migration strategy
 
-Add a new migration after `0002_phase4_runs.sql` rather than rewriting already-merged Phase 4 history.
+Add a new migration after `0002_phase4_runs.sql`; do not rewrite merged Phase 4 history.
 
 Expected logical additions:
 
 ```text
 arcp_budget_envelopes
-(optional indexes / triggers)
+model invocation lifecycle columns or equivalent persisted fields
+indexes / validation / settlement triggers
 ```
 
-The migration must preserve existing Phase 4 rows.
+The envelope implementation may use D1/SQLite JSON table functions to validate/update all dimension items from one JSON payload within one statement-trigger transaction boundary.
 
-Existing `arcp_model_budget_reservations` may remain for backward compatibility during the implementation branch, but once no production path writes new rows there, it is legacy Phase 4 state rather than the canonical 5.0A mechanism.
+Existing Phase 4 rows remain readable.
 
-Do not destructively drop old tables in 5.0A unless a migration test proves old Phase 4 state remains recoverable.
+Existing `arcp_model_budget_reservations` may remain during compatibility/migration, but once new model calls use Budget Envelopes it is legacy Phase 4 state rather than the canonical 5.0A path.
+
+Do not destructively drop old tables in 5.0A unless explicit migration tests prove old Phase 4 state remains recoverable.
 
 ---
 
-# 19. API boundary changes
+# 20. API boundary changes
 
 5.0A is an internal runtime contract change. It does not require new public control-plane routes.
 
-Changed internal interfaces are expected in:
+Expected changed interfaces:
 
 ```text
 @arcp/workflow-core
   RunStateStorePort
   ModelPort
   clock ports
-  budget types
+  budget-envelope types
+  model invocation lifecycle
 
 @arcp/adapter-model
-  deterministic model adapter
+  deterministic ModelPort
 
 @arcp/adapter-cloudflare
   D1RunStateStore
-  runtime clock adapter / composition as needed
+  D1 migration
+  runtime clock composition as needed
 ```
 
 Public HTTP wire contracts remain unchanged.
 
 ---
 
-# 20. Testing strategy
+# 21. Testing strategy
 
-## 20.1 Budget-view parity
+## 21.1 Budget-view parity
 
 Same fixture against in-memory and D1:
 
@@ -1007,19 +1139,30 @@ read view
 
 Counters must match exactly.
 
-## 20.2 Atomic multi-dimensional reservation
+## 21.2 Atomic multi-dimensional reservation
 
-Create a request where four dimensions fit except one.
+Create an envelope where every dimension fits except one.
 
 Expected:
 
 ```text
 reserve fails
-all four ledger rows unchanged
+all ledger rows unchanged
 no envelope grant exists
 ```
 
-## 20.3 Stale-view race
+## 21.3 Atomic settlement
+
+Attempt settlement with one invalid actual among otherwise-valid dimensions.
+
+Expected:
+
+```text
+settlement fails
+no dimension settles
+```
+
+## 21.4 Stale-view race
 
 ```text
 caller A reads 1000 available
@@ -1034,7 +1177,7 @@ A atomic reserve fails
 consumed/reserved never exceed limit
 ```
 
-## 20.4 Provider output ceiling
+## 21.5 Provider output ceiling
 
 ```text
 remaining output = 1000
@@ -1042,34 +1185,35 @@ remaining output = 1000
 
 Assert the adapter receives `maxOutputTokens <= 1000`.
 
-## 20.5 Unsupported hard limit
+## 21.6 Unsupported hard limit
 
-Adapter declares/simulates inability to enforce a supplied finite limit.
+Adapter cannot enforce one finite supplied limit.
 
 Expected:
 
 ```text
 model_limit_unsupported
+invocation never reaches calling
 provider-call counter = 0
 ```
 
-## 20.6 Input preflight
+## 21.7 Input preflight
 
 Serialized input exceeds `maxInputTokens`.
 
-Expected zero provider calls.
+Expected zero provider calls and no `calling` transition.
 
-## 20.7 Cost ceiling
+## 21.8 Cost ceiling
 
-Configured price bound means requested output limit would exceed `maxCostMicros`.
+Configured price bound means the requested output/input maxima would exceed `maxCostMicros`.
 
-Adapter must reduce provider limits or fail closed before provider I/O.
+Adapter must reduce provider limits or fail closed before `calling`/provider I/O.
 
-## 20.8 Settlement
+## 21.9 Settlement
 
 ```text
-reserve 1000 output
-actual 237
+reserve output 1000
+actual output 237
 ```
 
 Expected:
@@ -1080,48 +1224,62 @@ consumed += 237
 released += 763
 ```
 
-## 20.9 Missing usage
+## 21.10 Missing usage
 
-Provider returns success with a hard-enforced dimension missing from usage.
+Provider returns without authoritative actual for a reserved dimension.
 
 Expected reservation is not silently released as zero.
 
-## 20.10 Waiting does not consume active wall time
+## 21.11 Waiting does not consume active wall time
 
-Use a deterministic monotonic clock:
+Use deterministic clocks:
 
 ```text
-advance uses 100ms
+advance active time = 100ms
 run enters waiting-approval
-simulate 1 day of provenance/calendar time
-resume uses 200ms
+provenance/calendar jumps by 1 day
+resume active time = 200ms
 ```
 
 Expected wall-time consumption = 300ms, not one day.
 
-## 20.11 Provenance time independence
+## 21.12 Provenance-time independence
 
 Change `InstantRef` dramatically while monotonic elapsed stays the same.
 
 Expected runtime wall-time usage unchanged.
 
-## 20.12 Monotonic time sensitivity
+## 21.13 Monotonic sensitivity
 
 Keep `InstantRef` fixed while monotonic elapsed changes.
 
 Expected runtime wall-time usage follows monotonic elapsed.
 
-## 20.13 Crash after reservation
+## 21.14 Wall-time overrun is not clamped
 
-Reserve envelope and inject crash before settlement.
+Reserve 100ms, simulate 150ms elapsed.
 
 Expected:
 
-- reservation remains explicit;
-- restart does not reset the run budget;
-- recovery cannot assume zero consumption.
+```text
+runtime_wall_time_exhausted / contract violation
+no released wall-time remainder
+no further active work
+```
 
-## 20.14 Existing Phase 4 regression suite
+## 21.15 Crash while invocation is `reserved`
+
+Expected safe release/retry after validating provider I/O never crossed the durable boundary.
+
+## 21.16 Crash while invocation is `calling`
+
+Expected envelope remains held; no zero-consumption assumption; reconcile or conservatively consume maximum.
+
+## 21.17 Containment preemption regression
+
+Use a blocking model call. While it is in flight, a containment request must still become durable without waiting behind the advance queue.
+
+## 21.18 Existing regression suite
 
 All Phase 0–4 tests remain green, including:
 
@@ -1134,7 +1292,7 @@ All Phase 0–4 tests remain green, including:
 
 ---
 
-# 21. Security / governance review checklist
+# 22. Security / governance review checklist
 
 For every 5.0A code path, reviewers ask:
 
@@ -1143,54 +1301,60 @@ For every 5.0A code path, reviewers ask:
 3. Can stale budget view cause overspend? **Must be no.**
 4. Can a crash release unknown usage as zero? **Must be no.**
 5. Can CTCL evidence become a runtime or fencing clock? **Must be no.**
-6. Can budget exhaustion imply identity deletion/suspension beyond existing scoped runtime behavior? **Must be no.**
-7. Can a future Standing Entity exit/change its Resource relationship without the budget mechanism becoming an ownership claim? **Must remain possible.**
-8. Does the design still work if the Agent remains an ordinary tool forever? **Must be yes.**
-9. Does the design avoid a hard-to-exit permanent-control mechanism if the Agent later deserves subject treatment? **Must be yes.**
+6. Can elapsed wall time be clamped to hide a hard-limit violation? **Must be no.**
+7. Can an invocation in `calling` be treated as “provider definitely never ran”? **Must be no.**
+8. Can omitted model-budget fields become unlimited? **Must be no.**
+9. Can budget exhaustion imply identity deletion or a subjecthood judgment? **Must be no.**
+10. Can a future Standing Entity exit/change its Resource relationship without the budget mechanism becoming an ownership claim? **Must remain possible.**
+11. Does the design work if the Agent remains an ordinary tool forever? **Must be yes.**
+12. Does the design avoid hard-to-exit permanent control if the Agent later deserves subject treatment? **Must be yes.**
 
 ---
 
-# 22. Acceptance criteria
+# 23. Acceptance criteria
 
-5.0A is complete when all of the following are true:
+5.0A is complete when all are true:
 
 1. `ProvenanceClockPort` and `MonotonicClockPort` are explicit and tested separately.
 2. No persisted monotonic timestamp is used as historical time.
 3. `RunStateStorePort.getBudgetView()` exists.
 4. D1 and in-memory stores return complete budget views.
 5. Missing budget dimensions fail as invalid persisted state.
-6. Multi-dimensional Budget Envelope reservation is durable.
-7. Envelope reservation is all-or-nothing.
-8. Envelope reservation is fencing-protected.
-9. Settlement is atomic across all envelope dimensions.
-10. Retry with the same envelope ID is idempotent when content matches.
-11. Envelope ID collision with different content fails closed.
-12. Model turns use one model-call envelope instead of independent post-call token/cost charges.
-13. `ModelPort` receives host-enforced `ModelCallLimits`.
-14. `ModelTurnInput.budgetView` is populated from real ledger state rather than `{}`.
-15. `budgetView` is never treated as authority to enlarge `ModelCallLimits`.
-16. Output token ceiling is enforced before provider I/O.
-17. Input token ceiling is enforced before provider I/O.
-18. Cost ceiling is enforced before provider I/O when the adapter has a safe deterministic price bound.
-19. An adapter unable to enforce a supplied finite limit makes zero provider calls.
-20. Active wall time uses only `MonotonicClockPort`.
-21. Persisted waiting time is excluded from active wall time.
-22. Crash before settlement cannot reset reserved resources.
-23. Unknown usage is never silently settled as zero.
-24. Provider-reported usage above a granted envelope is recorded as a contract violation.
-25. Containment remains able to land while an advance is blocked in a model call.
-26. Phase 3 CTCL / lease / fencing invariants remain unchanged.
-27. Existing claim-before-external-effect semantics remain unchanged.
-28. Every budget dimension is documented as HARD_ENFORCED, ACCOUNTED_ONLY, or DECLARED_NOT_APPLICABLE_YET.
-29. No non-existent Phase 5 capability is invented solely to make a budget counter appear enforced.
-30. Normal CI remains credential-free and network-free.
-31. Phase 0–4 regression tests and typecheck pass.
+6. Omitted optional model budget fields resolve to zero, never unlimited.
+7. Multi-dimensional Budget Envelope reservation is durable.
+8. Envelope reservation is all-or-nothing.
+9. Envelope reservation is fencing-protected.
+10. Envelope settlement is all-or-nothing across dimensions.
+11. Retry with same envelope ID/content is idempotent.
+12. Envelope ID collision with different content fails closed.
+13. Model turns use one model-call envelope instead of independent post-call token/cost charges.
+14. `ModelInvocationRecord` has an unambiguous new `budget_envelope_id` path.
+15. Model invocation lifecycle has a durable `reserved -> calling` boundary before provider I/O.
+16. Crash recovery distinguishes `reserved` from `calling`.
+17. `ModelPort` receives host-enforced `ModelCallLimits`.
+18. `ModelTurnInput.budgetView` is populated from durable ledger state rather than `{}`.
+19. `budgetView` is never treated as authority to enlarge `ModelCallLimits`.
+20. Output token ceiling is enforced before provider I/O.
+21. Input token ceiling is enforced before provider I/O.
+22. Cost ceiling is enforced before provider I/O when the adapter has a deterministic safe price bound.
+23. An adapter unable to enforce any supplied finite limit makes zero provider calls.
+24. Active wall time uses only `MonotonicClockPort`.
+25. Persisted waiting time is excluded from active wall time.
+26. Wall-time overrun is recorded as a violation rather than clamped away.
+27. Crash before settlement cannot reset reserved resources.
+28. Unknown usage is never silently settled as zero.
+29. Provider-reported usage above a granted envelope is recorded as a contract violation.
+30. Containment remains able to land while an advance is blocked in a model call.
+31. Phase 3 CTCL / lease / fencing invariants remain unchanged.
+32. Existing claim-before-external-effect semantics remain unchanged.
+33. Every budget dimension is documented as HARD_ENFORCED, ACCOUNTED_ONLY, or DECLARED_NOT_APPLICABLE_YET.
+34. No non-existent Phase 5 capability is invented solely to make a budget counter appear enforced.
+35. Normal CI remains credential-free and network-free.
+36. Phase 0–4 regression tests and typecheck pass.
 
 ---
 
-# 23. Explicitly locked design decisions
-
-The following are intentionally expensive to reverse and are therefore explicit:
+# 24. Explicitly locked design decisions
 
 ```text
 1. provenance clock != monotonic runtime clock
@@ -1199,12 +1363,16 @@ The following are intentionally expensive to reverse and are therefore explicit:
 4. adapter translates limits; adapter does not choose governance budget
 5. one logical provider call -> one logical multi-dimensional budget envelope
 6. envelope reservation is all-or-nothing
-7. stale advisory reads never override atomic store guards
-8. unknown usage != zero usage
-9. persist elapsed amounts, never monotonic timestamp origins
-10. hard-enforced means pre-call/provider-bounded, not post-call accounting
-11. missing capability != fake enforcement
-12. budget authority != identity ownership
+7. envelope settlement is all-or-nothing
+8. stale advisory reads never override atomic store guards
+9. unknown usage != zero usage
+10. reserved invocation != calling invocation
+11. persist elapsed amounts, never monotonic timestamp origins
+12. wall-time overrun != clamped success
+13. omitted model budget != unlimited budget
+14. hard-enforced means pre-call/provider-bounded, not post-call accounting
+15. missing capability != fake enforcement
+16. budget authority != identity ownership
 ```
 
 Replaceable implementation choices include:
@@ -1218,14 +1386,14 @@ Replaceable implementation choices include:
 
 ---
 
-# 24. Deferred decisions
+# 25. Deferred decisions
 
-Explicitly deferred to later phases:
+Explicitly deferred:
 
 - `PolicyRef` storage/activation — 5.0B;
 - production Principal/AuthN/AuthZ — 5.0C;
 - typed Entity/Residence/Resource capability targets — 5.1;
-- tool-call/network/storage-write metering contracts tied to the adapter SDK — Phase 5 proper;
+- full tool-call/network/storage-write metering contracts tied to the adapter SDK — Phase 5 proper;
 - distributed or parallel run scheduling;
 - cross-Agent shared budget pools;
 - autonomous budget self-modification policy;
@@ -1233,23 +1401,39 @@ Explicitly deferred to later phases:
 
 ---
 
-# 25. Design closure
+# 26. Self-review hardening applied
+
+Before review handoff, this spec was re-read against the current Phase 4 code and tightened in four places:
+
+1. **Wall-time overrun:** removed the unsafe idea of settling `min(elapsed, reserved)`, which would hide a real overrun. Overrun is now an explicit violation with no released remainder.
+2. **Crash boundary:** promoted existing `ModelInvocationStatus` values into a required durable `reserved -> calling` transition so recovery can distinguish “provider definitely not called” from “provider may have consumed resources.”
+3. **Missing usage:** normal envelope settlement now requires actual values for every reserved dimension; missing values enter recovery instead of becoming zero.
+4. **Optional model budgets:** omitted optional model limits resolve to zero, preserving `missing budget != unlimited`.
+
+No unresolved `TBD` or `TODO` semantics are intentionally left in this design. Provider-vendor details, 5.0B/5.0C, and Phase 5 capability metering are explicit deferred scope rather than placeholders.
+
+---
+
+# 27. Design closure
 
 Phase 4 made external effects crash-safe enough to run autonomously within explicit bounds.
 
 Phase 5.0A makes those bounds real at the provider boundary.
 
-The final semantic pipeline is:
+Final semantic pipeline:
 
 ```text
 Durable budget state
   -> advisory BudgetView
   -> host chooses requested resource envelope
   -> durable atomic grant
-  -> host derives hard call limits
-  -> adapter proves/enforces limits
+  -> durable invocation reserved state
+  -> adapter local preflight
+  -> durable calling boundary
+  -> host-derived hard call limits
   -> provider call
-  -> durable usage settlement
+  -> durable usage/outcome evidence
+  -> atomic envelope settlement
   -> unused resources released
 ```
 
