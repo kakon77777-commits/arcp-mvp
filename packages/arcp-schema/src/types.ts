@@ -192,13 +192,13 @@ export type RunPhase =
   | 'failed';
 
 /**
- * As of this PR, only max_turns/max_external_actions/max_model_input_tokens/
- * max_model_output_tokens/max_model_cost_micros are wired to real
- * reservation/consumption calls in BoundedRunOrchestrator. The remaining
- * fields are honored by RunStateStorePort/InMemoryBudgetLedger's counters
- * but nothing yet calls into them from the orchestrator's turn/action loop,
- * so a run cannot be stopped on those grounds alone yet -- see README.md
- * "Bounded resource governance" for the current per-dimension status.
+ * Explicit bounded profile shared by the Phase 4 runtime and Phase 5.0A
+ * envelope path. Phase 5.0A has real runtime boundaries for turns, active
+ * wall time, model input/output/cost and external actions. Tool calls,
+ * storage writes, network requests and recursive wakes remain declared until
+ * their Phase 5 capability boundaries exist. Missing optional model limits
+ * resolve to numeric zero, never unlimited; see README.md for the current
+ * evidence-backed per-dimension status.
  */
 export interface RunBudgetSpec {
   max_turns: number;
