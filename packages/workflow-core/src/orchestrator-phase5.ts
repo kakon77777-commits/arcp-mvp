@@ -1,6 +1,6 @@
 import { contentHash } from '@arcp/schema';
-import type { Phase5ModelInvocationRecord, RunRecord } from '@arcp/schema';
-import { budgetAvailable } from './budget.js';
+import type { BudgetEnvelopeRecord, Phase5ModelInvocationRecord, RunRecord } from '@arcp/schema';
+import { budgetAvailable, type BudgetDimension } from './budget.js';
 import { WorkflowError } from './errors.js';
 import {
   buildModelCallEnvelopeItems,
@@ -81,6 +81,20 @@ function isHostWorkflowError(error: unknown): error is WorkflowError {
   return error instanceof WorkflowError;
 }
 
+function isModelTurnProposal(value: unknown): value is ModelTurnProposal {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<ModelTurnProposal>;
+  return Array.isArray(candidate.actionIntents)
+    && typeof candidate.usage === 'object'
+    && candidate.usage !== null;
+}
+
+function conservativeActuals(envelope: BudgetEnvelopeRecord): Partial<Record<BudgetDimension, number>> {
+  return Object.fromEntries(
+    envelope.items.map((item) => [item.dimension, item.reserved]),
+  ) as Partial<Record<BudgetDimension, number>>;
+}
+
 /**
  * Phase 5.0A canonical orchestrator. It deliberately reuses the already
  * verified Phase 4 action/approval/reconcile state machine while replacing
@@ -110,10 +124,14 @@ export class BoundedRunOrchestrator {
       if (!Number.isFinite(available) || available <= 0) {
         throw new WorkflowError('runtime_wall_time_exhausted', 'active wall-time budget exhausted', false);
       }
+      // The durable budget snapshot makes a completed/failed retry a new
+      // active-time slice while concurrent callers observing the same state
+      // still derive the same idempotent reservation id.
       const envelopeId = compactHash('arcp:budget-envelope:advance:', {
         run_id: run.run_id,
         wake_idempotency_key: input.wake.idempotency_key,
         fencing_token: run.fencing_token,
+        wall_budget_state: view.wall_time_ms,
       });
       const envelope = await options.store.reserveBudgetEnvelope({
         runId: run.run_id,
@@ -181,36 +199,110 @@ export class BoundedRunOrchestrator {
           throw new WorkflowError('runtime_wall_time_exhausted', 'no active wall time remains before model call', false);
         }
 
-        const before = await options.store.getBudgetView(run.run_id);
-        const envelopeId = compactHash('arcp:budget-envelope:model:', {
-          run_id: run.run_id,
-          turn_index: legacyInput.turnIndex,
-        });
-        const envelope = await options.store.reserveBudgetEnvelope({
-          runId: run.run_id,
-          fencingToken: run.fencing_token,
-          envelopeId,
-          kind: 'model-call',
-          items: buildModelCallEnvelopeItems(before),
-          reservedAt: options.provenanceClock.now(),
-        });
-        const truthfulBudgetView = await options.store.getBudgetView(run.run_id);
-        const limits = deriveModelCallLimits(envelope, remainingWallTimeMs);
         const invocationId = compactHash('arcp:model-invocation:', {
           runId: run.run_id,
           turnIndex: legacyInput.turnIndex,
         });
-        const reservedInvocation: Phase5ModelInvocationRecord = {
-          schema: 'arcp/model-invocation/0.1',
-          invocation_id: invocationId,
-          run_id: run.run_id,
-          turn_index: legacyInput.turnIndex,
-          status: 'reserved',
-          budget_envelope_id: envelope.envelope_id,
-          input_hash: legacyInput.context.contextHash,
-          observed_at: options.provenanceClock.now(),
-        };
-        await options.store.createModelInvocation(reservedInvocation);
+        let invocation = await options.store.getModelInvocation(invocationId);
+        let envelope: BudgetEnvelopeRecord;
+
+        if (invocation) {
+          const existingEnvelope = await options.store.getBudgetEnvelope(invocation.budget_envelope_id);
+          if (!existingEnvelope || existingEnvelope.run_id !== run.run_id || existingEnvelope.kind !== 'model-call') {
+            throw new WorkflowError('invalid_persisted_state', `model invocation envelope missing: ${invocationId}`, false);
+          }
+          envelope = existingEnvelope;
+
+          if (invocation.status === 'succeeded') {
+            if (!isModelTurnProposal(invocation.structured_output)) {
+              throw new WorkflowError('invalid_persisted_state', `succeeded invocation lacks durable structured output: ${invocationId}`, false);
+            }
+            if (envelope.status === 'reserved' || envelope.status === 'recovery-required') {
+              await options.store.settleBudgetEnvelope({
+                runId: run.run_id,
+                envelopeId: envelope.envelope_id,
+                actuals: modelUsageToEnvelopeActuals(envelope, invocation.structured_output.usage),
+                settledAt: options.provenanceClock.now(),
+              });
+            } else if (envelope.status !== 'settled') {
+              throw new WorkflowError('invalid_persisted_state', `succeeded invocation has ${envelope.status} envelope`, false);
+            }
+            return structuredClone(invocation.structured_output);
+          }
+
+          if (invocation.status === 'calling' || invocation.status === 'unknown') {
+            if (invocation.status === 'calling') {
+              invocation = await options.store.transitionModelInvocation(invocationId, 'calling', {
+                ...invocation,
+                status: 'unknown',
+                observed_at: options.provenanceClock.now(),
+              });
+            }
+            if (envelope.status === 'reserved' || envelope.status === 'recovery-required') {
+              await options.store.settleBudgetEnvelope({
+                runId: run.run_id,
+                envelopeId: envelope.envelope_id,
+                actuals: conservativeActuals(envelope),
+                settledAt: options.provenanceClock.now(),
+              });
+            }
+            throw new WorkflowError(
+              'budget_envelope_recovery_required',
+              `ambiguous model invocation ${invocationId} conservatively consumed its reserved maxima`,
+              false,
+            );
+          }
+
+          if (invocation.status === 'failed') {
+            if (envelope.status === 'recovery-required') {
+              await options.store.settleBudgetEnvelope({
+                runId: run.run_id,
+                envelopeId: envelope.envelope_id,
+                actuals: conservativeActuals(envelope),
+                settledAt: options.provenanceClock.now(),
+              });
+              throw new WorkflowError(
+                'budget_envelope_recovery_required',
+                `failed provider invocation ${invocationId} had ambiguous resource use`,
+                false,
+              );
+            }
+            throw new WorkflowError('model_temporarily_unavailable', `model invocation already failed: ${invocationId}`, false);
+          }
+
+          if (invocation.status !== 'reserved' || envelope.status !== 'reserved') {
+            throw new WorkflowError('invalid_persisted_state', `invalid resumable model state: ${invocation.status}/${envelope.status}`, false);
+          }
+        } else {
+          const before = await options.store.getBudgetView(run.run_id);
+          const envelopeId = compactHash('arcp:budget-envelope:model:', {
+            run_id: run.run_id,
+            turn_index: legacyInput.turnIndex,
+          });
+          envelope = await options.store.reserveBudgetEnvelope({
+            runId: run.run_id,
+            fencingToken: run.fencing_token,
+            envelopeId,
+            kind: 'model-call',
+            items: buildModelCallEnvelopeItems(before),
+            reservedAt: options.provenanceClock.now(),
+          });
+          const reservedInvocation: Phase5ModelInvocationRecord = {
+            schema: 'arcp/model-invocation/0.1',
+            invocation_id: invocationId,
+            run_id: run.run_id,
+            turn_index: legacyInput.turnIndex,
+            status: 'reserved',
+            budget_envelope_id: envelope.envelope_id,
+            input_hash: legacyInput.context.contextHash,
+            observed_at: options.provenanceClock.now(),
+          };
+          invocation = await options.store.createModelInvocation(reservedInvocation);
+        }
+
+        const truthfulBudgetView = await options.store.getBudgetView(run.run_id);
+        const limits = deriveModelCallLimits(envelope, remainingWallTimeMs);
+        const reservedInvocation = invocation;
 
         let prepared: PreparedModelCall;
         try {
@@ -259,6 +351,7 @@ export class BoundedRunOrchestrator {
             ...calling,
             status: 'succeeded',
             output_hash: contentHash(proposal),
+            structured_output: structuredClone(proposal),
             usage: {
               input_tokens: proposal.usage.inputTokens,
               output_tokens: proposal.usage.outputTokens,
@@ -280,6 +373,7 @@ export class BoundedRunOrchestrator {
               ...calling,
               status: 'unknown',
               output_hash: contentHash(proposal),
+              structured_output: structuredClone(proposal),
               usage: {
                 ...(proposal.usage.inputTokens === undefined ? {} : { input_tokens: proposal.usage.inputTokens }),
                 ...(proposal.usage.outputTokens === undefined ? {} : { output_tokens: proposal.usage.outputTokens }),
