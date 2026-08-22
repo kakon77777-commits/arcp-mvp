@@ -1,4 +1,4 @@
-import type { BudgetEnvelopeRecord } from '@arcp/schema';
+import type { BudgetEnvelopeRecord, Phase5ModelInvocationRecord } from '@arcp/schema';
 import type { CompleteRunBudgetView } from './budget.js';
 import type { RunStateStorePort as Phase4RunStateStorePort } from './ports.js';
 import type {
@@ -19,4 +19,12 @@ export interface Phase5RunStateStorePort extends Phase4RunStateStorePort {
   releaseBudgetEnvelope(input: ReleaseBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord>;
   markBudgetEnvelopeRecoveryRequired(runId: string, envelopeId: string): Promise<BudgetEnvelopeRecord>;
   getBudgetEnvelope(envelopeId: string): Promise<BudgetEnvelopeRecord | null>;
+
+  createModelInvocation(record: Phase5ModelInvocationRecord): Promise<Phase5ModelInvocationRecord>;
+  getModelInvocation(invocationId: string): Promise<Phase5ModelInvocationRecord | null>;
+  transitionModelInvocation(
+    invocationId: string,
+    expectedStatus: Phase5ModelInvocationRecord['status'],
+    next: Phase5ModelInvocationRecord,
+  ): Promise<Phase5ModelInvocationRecord>;
 }
