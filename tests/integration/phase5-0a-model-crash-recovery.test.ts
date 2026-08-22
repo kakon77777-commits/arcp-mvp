@@ -84,6 +84,23 @@ class FailTurnAdvanceOnceStore extends InMemoryRunStateStore {
   }
 }
 
+class FailModelEnvelopeSettleOnceStore extends InMemoryRunStateStore {
+  private failed = false;
+  override async settleBudgetEnvelope(...args: Parameters<InMemoryRunStateStore['settleBudgetEnvelope']>) {
+    const [input] = args;
+    const envelope = await this.getBudgetEnvelope(input.envelopeId);
+    if (!this.failed && envelope?.kind === 'model-call' && envelope.status === 'reserved') {
+      this.failed = true;
+      throw new WorkflowError(
+        'invalid_persisted_state',
+        'simulated crash after durable model success before envelope settlement',
+        false,
+      );
+    }
+    return super.settleBudgetEnvelope(...args);
+  }
+}
+
 function engine(store: InMemoryRunStateStore, model: DeterministicModelAdapter, clock: ProvenanceClockPort) {
   return new BoundedRunOrchestrator({
     store,
@@ -154,5 +171,22 @@ describe('Phase 5.0A model-call crash recovery', () => {
     expect(resumed.run.phase).toBe('completed');
     expect(resumed.run.turn_index).toBe(1);
     expect(model.executions).toBe(1);
+  });
+
+  it('replays a durably succeeded proposal after settlement crashed into recovery-required', async () => {
+    const store = new FailModelEnvelopeSettleOnceStore();
+    const model = new DeterministicModelAdapter([successfulStep()]);
+    const runtime = engine(store, model, { now: () => ({ instant_id: 'local:fixed:settlement-crash', unverified: true }) });
+
+    await expect(runtime.advance({ agentId, wake, fencingToken: 6 }))
+      .rejects.toMatchObject({ code: 'invalid_persisted_state' });
+    expect(model.executions).toBe(1);
+    expect((await store.getBudgetView(runId)).model_output_tokens).toMatchObject({ reserved: 50, consumed: 0 });
+
+    const resumed = await runtime.advance({ agentId, wake, fencingToken: 6 });
+    expect(resumed.run.phase).toBe('completed');
+    expect(model.executions).toBe(1);
+    expect((await store.getBudgetView(runId)).model_output_tokens).toMatchObject({ reserved: 0, consumed: 5 });
+    expect((await store.getBudgetView(runId)).model_cost_micros).toMatchObject({ reserved: 0, consumed: 20 });
   });
 });
