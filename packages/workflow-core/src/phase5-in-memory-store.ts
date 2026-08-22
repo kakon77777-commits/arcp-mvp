@@ -1,5 +1,5 @@
 import { canonicalize } from '@arcp/schema';
-import type { BudgetEnvelopeRecord } from '@arcp/schema';
+import type { BudgetEnvelopeRecord, Phase5ModelInvocationRecord } from '@arcp/schema';
 import { InMemoryRunStateStore as Phase4InMemoryRunStateStore } from './in-memory-store.js';
 import type { BudgetDimension, CompleteRunBudgetView } from './budget.js';
 import { WorkflowError } from './errors.js';
@@ -34,11 +34,36 @@ function envelopeBinding(record: BudgetEnvelopeRecord): unknown {
   };
 }
 
+function canTransitionInvocation(
+  from: Phase5ModelInvocationRecord['status'],
+  to: Phase5ModelInvocationRecord['status'],
+): boolean {
+  if (from === 'reserved') return to === 'calling' || to === 'failed';
+  if (from === 'calling') return to === 'succeeded' || to === 'failed' || to === 'unknown';
+  return false;
+}
+
+function assertSameInvocationBinding(
+  current: Phase5ModelInvocationRecord,
+  next: Phase5ModelInvocationRecord,
+): void {
+  if (
+    next.invocation_id !== current.invocation_id
+    || next.run_id !== current.run_id
+    || next.turn_index !== current.turn_index
+    || next.budget_envelope_id !== current.budget_envelope_id
+    || next.input_hash !== current.input_hash
+  ) {
+    throw new WorkflowError('invalid_persisted_state', `model invocation binding changed: ${current.invocation_id}`, false);
+  }
+}
+
 /** Phase 5.0A-compatible in-memory store layered over the Phase 4 implementation. */
 export class Phase5InMemoryRunStateStore
   extends Phase4InMemoryRunStateStore
   implements Phase5RunStateStorePort {
   private readonly envelopes = new Map<string, BudgetEnvelopeRecord>();
+  private readonly phase5ModelInvocations = new Map<string, Phase5ModelInvocationRecord>();
 
   async getBudgetView(runId: string): Promise<CompleteRunBudgetView> {
     const base = this.budgetView(runId);
@@ -103,8 +128,6 @@ export class Phase5InMemoryRunStateStore
       }
     }
 
-    // One synchronous publication after every dimension has been validated:
-    // either the whole envelope becomes visible or none of it does.
     this.envelopes.set(input.envelopeId, structuredClone(candidate));
     return structuredClone(candidate);
   }
@@ -169,6 +192,43 @@ export class Phase5InMemoryRunStateStore
   async getBudgetEnvelope(envelopeId: string): Promise<BudgetEnvelopeRecord | null> {
     const record = this.envelopes.get(envelopeId);
     return record ? structuredClone(record) : null;
+  }
+
+  async createModelInvocation(record: Phase5ModelInvocationRecord): Promise<Phase5ModelInvocationRecord> {
+    if ((await this.getRun(record.run_id)) === null) {
+      throw new WorkflowError('invalid_persisted_state', `run not found: ${record.run_id}`, false);
+    }
+    const existing = this.phase5ModelInvocations.get(record.invocation_id);
+    if (existing) {
+      if (canonicalize(existing) !== canonicalize(record)) {
+        throw new WorkflowError('invalid_persisted_state', `model invocation id collision: ${record.invocation_id}`, false);
+      }
+      return structuredClone(existing);
+    }
+    this.phase5ModelInvocations.set(record.invocation_id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async getModelInvocation(invocationId: string): Promise<Phase5ModelInvocationRecord | null> {
+    const record = this.phase5ModelInvocations.get(invocationId);
+    return record ? structuredClone(record) : null;
+  }
+
+  async transitionModelInvocation(
+    invocationId: string,
+    expectedStatus: Phase5ModelInvocationRecord['status'],
+    next: Phase5ModelInvocationRecord,
+  ): Promise<Phase5ModelInvocationRecord> {
+    const current = this.phase5ModelInvocations.get(invocationId);
+    if (!current || current.status !== expectedStatus) {
+      throw new WorkflowError('invalid_persisted_state', `stale model invocation transition: ${invocationId}`, false);
+    }
+    assertSameInvocationBinding(current, next);
+    if (!canTransitionInvocation(current.status, next.status)) {
+      throw new WorkflowError('invalid_persisted_state', `invalid model invocation transition: ${current.status} -> ${next.status}`, false);
+    }
+    this.phase5ModelInvocations.set(invocationId, structuredClone(next));
+    return structuredClone(next);
   }
 
   private validateReservationItems(items: ReserveBudgetEnvelopeInput['items']): void {
