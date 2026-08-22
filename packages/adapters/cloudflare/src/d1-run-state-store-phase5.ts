@@ -1,3 +1,5 @@
+import { canonicalize } from '@arcp/schema';
+import type { BudgetEnvelopeRecord } from '@arcp/schema';
 import type { D1DatabaseLike } from './d1-types.js';
 import { D1RunStateStore as Phase4D1RunStateStore } from './d1-run-state-store.js';
 import {
@@ -5,6 +7,9 @@ import {
   type BudgetDimension,
   type CompleteRunBudgetView,
   type Phase5RunStateStorePort,
+  type ReleaseBudgetEnvelopeInput,
+  type ReserveBudgetEnvelopeInput,
+  type SettleBudgetEnvelopeInput,
 } from '@arcp/workflow-core';
 
 const DIMENSIONS: BudgetDimension[] = [
@@ -26,6 +31,35 @@ interface BudgetRow {
   reserved: number;
   consumed: number;
   released: number;
+}
+
+interface EnvelopeRow {
+  envelope_json: string;
+}
+
+function envelopeBinding(record: BudgetEnvelopeRecord): unknown {
+  return {
+    envelope_id: record.envelope_id,
+    run_id: record.run_id,
+    fencing_token: record.fencing_token,
+    kind: record.kind,
+    items: record.items.map(({ dimension, reserved }) => ({ dimension, reserved })),
+    reserved_at: record.reserved_at,
+  };
+}
+
+function mapEnvelopeSqlError(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('ARCP_BUDGET_EXHAUSTED')) {
+    throw new WorkflowError('budget_exhausted', 'D1 budget envelope exceeds run budget', false, { cause: error });
+  }
+  if (message.includes('ARCP_STALE_FENCING')) {
+    throw new WorkflowError('stale_fencing_token', 'D1 budget envelope rejected stale fencing', false, { cause: error });
+  }
+  if (message.includes('ARCP_ENVELOPE_INVALID') || message.includes('ARCP_BUDGET_DIMENSION_MISSING')) {
+    throw new WorkflowError('budget_envelope_invalid', 'D1 budget envelope is invalid', false, { cause: error });
+  }
+  throw error;
 }
 
 /**
@@ -72,5 +106,158 @@ export class Phase5D1RunStateStore
       throw new WorkflowError('invalid_persisted_state', `D1 run budget is incomplete: ${runId}`, false);
     }
     return output as CompleteRunBudgetView;
+  }
+
+  async reserveBudgetEnvelope(input: ReserveBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord> {
+    const run = await this.getRun(input.runId);
+    if (!run) throw new WorkflowError('invalid_persisted_state', `run not found: ${input.runId}`, false);
+    if (run.fencing_token !== input.fencingToken) {
+      throw new WorkflowError('stale_fencing_token', `stale fencing token for ${input.runId}`, false);
+    }
+
+    const candidate: BudgetEnvelopeRecord = {
+      schema: 'arcp/budget-envelope/0.1',
+      envelope_id: input.envelopeId,
+      run_id: input.runId,
+      fencing_token: input.fencingToken,
+      kind: input.kind,
+      status: 'reserved',
+      items: input.items.map(({ dimension, amount }) => ({ dimension, reserved: amount })),
+      reserved_at: structuredClone(input.reservedAt),
+    };
+
+    const existing = await this.getBudgetEnvelope(input.envelopeId);
+    if (existing) {
+      if (canonicalize(envelopeBinding(existing)) !== canonicalize(envelopeBinding(candidate))) {
+        throw new WorkflowError('budget_envelope_conflict', `budget envelope id collision: ${input.envelopeId}`, false);
+      }
+      return existing;
+    }
+
+    try {
+      await this.phase5Db.prepare(
+        `INSERT INTO arcp_budget_envelopes
+         (envelope_id, run_id, fencing_token, kind, status, items_json, actuals_json, envelope_json)
+         VALUES (?, ?, ?, ?, 'reserved', ?, NULL, ?)`,
+      ).bind(
+        candidate.envelope_id,
+        candidate.run_id,
+        candidate.fencing_token,
+        candidate.kind,
+        JSON.stringify(candidate.items),
+        JSON.stringify(candidate),
+      ).run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('UNIQUE constraint failed')) {
+        const raced = await this.getBudgetEnvelope(input.envelopeId);
+        if (raced && canonicalize(envelopeBinding(raced)) === canonicalize(envelopeBinding(candidate))) {
+          return raced;
+        }
+        throw new WorkflowError('budget_envelope_conflict', `budget envelope id collision: ${input.envelopeId}`, false, { cause: error });
+      }
+      mapEnvelopeSqlError(error);
+    }
+    return (await this.getBudgetEnvelope(input.envelopeId))!;
+  }
+
+  async settleBudgetEnvelope(input: SettleBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord> {
+    const existing = await this.requireEnvelope(input.envelopeId, input.runId);
+    if (existing.status === 'settled') return existing;
+    if (existing.status !== 'reserved') {
+      throw new WorkflowError('budget_envelope_invalid', `cannot settle envelope from ${existing.status}`, false);
+    }
+
+    const actualKeys = Object.keys(input.actuals);
+    if (actualKeys.length !== existing.items.length) {
+      throw new WorkflowError('budget_envelope_invalid', 'settlement requires an actual for every reserved dimension', false);
+    }
+    const actuals = existing.items.map((item) => {
+      const actual = input.actuals[item.dimension];
+      if (actual === undefined || !Number.isFinite(actual) || actual < 0 || actual > item.reserved) {
+        throw new WorkflowError('budget_envelope_invalid', `invalid/missing actual for ${item.dimension}`, false);
+      }
+      return { dimension: item.dimension, actual };
+    });
+    if (actualKeys.some((key) => !existing.items.some((item) => item.dimension === key))) {
+      throw new WorkflowError('budget_envelope_invalid', 'settlement contains non-reserved dimension', false);
+    }
+
+    const settled: BudgetEnvelopeRecord = {
+      ...existing,
+      status: 'settled',
+      items: existing.items.map((item) => ({ ...item, actual: input.actuals[item.dimension]! })),
+      settled_at: structuredClone(input.settledAt),
+    };
+    try {
+      const result = await this.phase5Db.prepare(
+        `UPDATE arcp_budget_envelopes
+         SET status = 'settled', actuals_json = ?, envelope_json = ?
+         WHERE envelope_id = ? AND run_id = ? AND status = 'reserved'`,
+      ).bind(JSON.stringify(actuals), JSON.stringify(settled), input.envelopeId, input.runId).run();
+      if ((result.meta?.changes ?? 0) !== 1) {
+        const raced = await this.requireEnvelope(input.envelopeId, input.runId);
+        if (raced.status === 'settled') return raced;
+        throw new WorkflowError('budget_envelope_invalid', `budget envelope settle race: ${input.envelopeId}`, false);
+      }
+    } catch (error) {
+      if (error instanceof WorkflowError) throw error;
+      mapEnvelopeSqlError(error);
+    }
+    return (await this.getBudgetEnvelope(input.envelopeId))!;
+  }
+
+  async releaseBudgetEnvelope(input: ReleaseBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord> {
+    const existing = await this.requireEnvelope(input.envelopeId, input.runId);
+    if (existing.status === 'released') return existing;
+    if (existing.status !== 'reserved') {
+      throw new WorkflowError('budget_envelope_invalid', `cannot release envelope from ${existing.status}`, false);
+    }
+    const released: BudgetEnvelopeRecord = { ...existing, status: 'released' };
+    try {
+      const result = await this.phase5Db.prepare(
+        `UPDATE arcp_budget_envelopes SET status = 'released', envelope_json = ?
+         WHERE envelope_id = ? AND run_id = ? AND status = 'reserved'`,
+      ).bind(JSON.stringify(released), input.envelopeId, input.runId).run();
+      if ((result.meta?.changes ?? 0) !== 1) {
+        throw new WorkflowError('budget_envelope_invalid', `budget envelope release race: ${input.envelopeId}`, false);
+      }
+    } catch (error) {
+      if (error instanceof WorkflowError) throw error;
+      mapEnvelopeSqlError(error);
+    }
+    return (await this.getBudgetEnvelope(input.envelopeId))!;
+  }
+
+  async markBudgetEnvelopeRecoveryRequired(runId: string, envelopeId: string): Promise<BudgetEnvelopeRecord> {
+    const existing = await this.requireEnvelope(envelopeId, runId);
+    if (existing.status === 'recovery-required') return existing;
+    if (existing.status !== 'reserved') {
+      throw new WorkflowError('budget_envelope_invalid', `cannot mark ${existing.status} envelope recovery-required`, false);
+    }
+    const recovery: BudgetEnvelopeRecord = { ...existing, status: 'recovery-required' };
+    const result = await this.phase5Db.prepare(
+      `UPDATE arcp_budget_envelopes SET status = 'recovery-required', envelope_json = ?
+       WHERE envelope_id = ? AND run_id = ? AND status = 'reserved'`,
+    ).bind(JSON.stringify(recovery), envelopeId, runId).run();
+    if ((result.meta?.changes ?? 0) !== 1) {
+      throw new WorkflowError('budget_envelope_invalid', `budget envelope recovery transition race: ${envelopeId}`, false);
+    }
+    return (await this.getBudgetEnvelope(envelopeId))!;
+  }
+
+  async getBudgetEnvelope(envelopeId: string): Promise<BudgetEnvelopeRecord | null> {
+    const row = await this.phase5Db.prepare(
+      `SELECT envelope_json FROM arcp_budget_envelopes WHERE envelope_id = ?`,
+    ).bind(envelopeId).first<EnvelopeRow>();
+    return row ? JSON.parse(row.envelope_json) as BudgetEnvelopeRecord : null;
+  }
+
+  private async requireEnvelope(envelopeId: string, runId: string): Promise<BudgetEnvelopeRecord> {
+    const record = await this.getBudgetEnvelope(envelopeId);
+    if (!record || record.run_id !== runId) {
+      throw new WorkflowError('budget_envelope_invalid', `budget envelope not found: ${envelopeId}`, false);
+    }
+    return record;
   }
 }
