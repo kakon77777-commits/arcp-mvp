@@ -1,5 +1,11 @@
+import type { BudgetEnvelopeRecord } from '@arcp/schema';
 import type { CompleteRunBudgetView } from './budget.js';
 import type { RunStateStorePort as Phase4RunStateStorePort } from './ports.js';
+import type {
+  ReleaseBudgetEnvelopeInput,
+  ReserveBudgetEnvelopeInput,
+  SettleBudgetEnvelopeInput,
+} from './types.js';
 
 /**
  * Staged Phase 5.0A extension of the Phase 4 store contract. Keeping the
@@ -8,4 +14,9 @@ import type { RunStateStorePort as Phase4RunStateStorePort } from './ports.js';
  */
 export interface Phase5RunStateStorePort extends Phase4RunStateStorePort {
   getBudgetView(runId: string): Promise<CompleteRunBudgetView>;
+  reserveBudgetEnvelope(input: ReserveBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord>;
+  settleBudgetEnvelope(input: SettleBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord>;
+  releaseBudgetEnvelope(input: ReleaseBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord>;
+  markBudgetEnvelopeRecoveryRequired(runId: string, envelopeId: string): Promise<BudgetEnvelopeRecord>;
+  getBudgetEnvelope(envelopeId: string): Promise<BudgetEnvelopeRecord | null>;
 }
