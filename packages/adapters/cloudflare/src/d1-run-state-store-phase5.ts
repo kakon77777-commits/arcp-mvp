@@ -194,7 +194,7 @@ export class Phase5D1RunStateStore
   async settleBudgetEnvelope(input: SettleBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord> {
     const existing = await this.requireEnvelope(input.envelopeId, input.runId);
     if (existing.status === 'settled') return existing;
-    if (existing.status !== 'reserved') {
+    if (existing.status !== 'reserved' && existing.status !== 'recovery-required') {
       throw new WorkflowError('budget_envelope_invalid', `cannot settle envelope from ${existing.status}`, false);
     }
 
@@ -223,7 +223,7 @@ export class Phase5D1RunStateStore
       const result = await this.phase5Db.prepare(
         `UPDATE arcp_budget_envelopes
          SET status = 'settled', actuals_json = ?, envelope_json = ?
-         WHERE envelope_id = ? AND run_id = ? AND status = 'reserved'`,
+         WHERE envelope_id = ? AND run_id = ? AND status IN ('reserved','recovery-required')`,
       ).bind(JSON.stringify(actuals), JSON.stringify(settled), input.envelopeId, input.runId).run();
       if ((result.meta?.changes ?? 0) !== 1) {
         const raced = await this.requireEnvelope(input.envelopeId, input.runId);
