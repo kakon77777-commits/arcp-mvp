@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS arcp_budget_envelopes (
 CREATE INDEX IF NOT EXISTS idx_arcp_budget_envelopes_run
   ON arcp_budget_envelopes (run_id, status);
 
--- Reserved for Task 4 durable model invocation lifecycle CAS. Old rows are
--- backfilled from their Phase 4 JSON so they remain readable after migration.
+-- Durable model invocation lifecycle CAS. Old rows are backfilled from their
+-- Phase 4 JSON so they remain readable after migration.
 ALTER TABLE arcp_model_invocations ADD COLUMN status TEXT;
 ALTER TABLE arcp_model_invocations ADD COLUMN budget_envelope_id TEXT;
 UPDATE arcp_model_invocations
@@ -89,10 +89,11 @@ BEGIN
      );
 END;
 
--- Normal settlement requires exactly one valid actual for every reserved dimension.
+-- Normal or conservative recovery settlement requires exactly one valid actual
+-- for every held dimension. recovery-required remains held until this update.
 CREATE TRIGGER IF NOT EXISTS arcp_budget_envelope_settle_guard
 BEFORE UPDATE OF status ON arcp_budget_envelopes
-WHEN OLD.status = 'reserved' AND NEW.status = 'settled'
+WHEN OLD.status IN ('reserved','recovery-required') AND NEW.status = 'settled'
 BEGIN
   SELECT CASE
     WHEN NEW.actuals_json IS NULL
@@ -134,7 +135,7 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS arcp_budget_envelope_settle_apply
 AFTER UPDATE OF status ON arcp_budget_envelopes
-WHEN OLD.status = 'reserved' AND NEW.status = 'settled'
+WHEN OLD.status IN ('reserved','recovery-required') AND NEW.status = 'settled'
 BEGIN
   UPDATE arcp_run_budget_ledger
      SET reserved = reserved - (
