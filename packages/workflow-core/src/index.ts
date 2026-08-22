@@ -4,6 +4,7 @@ export * from './ports.js';
 export * from './phase5-run-state-store.js';
 export * from './state-machine.js';
 export * from './budget.js';
+export * from './model-call-budget.js';
 export * from './hashing.js';
 export * from './execution-ledger.js';
 export { InMemoryRunStateStore as Phase4InMemoryRunStateStore } from './in-memory-store.js';
