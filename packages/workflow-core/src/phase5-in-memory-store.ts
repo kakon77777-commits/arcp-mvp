@@ -135,7 +135,7 @@ export class Phase5InMemoryRunStateStore
   async settleBudgetEnvelope(input: SettleBudgetEnvelopeInput): Promise<BudgetEnvelopeRecord> {
     const existing = this.requireEnvelope(input.envelopeId, input.runId);
     if (existing.status === 'settled') return structuredClone(existing);
-    if (existing.status !== 'reserved') {
+    if (existing.status !== 'reserved' && existing.status !== 'recovery-required') {
       throw new WorkflowError('budget_envelope_invalid', `cannot settle envelope from ${existing.status}`, false);
     }
 
