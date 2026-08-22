@@ -46,10 +46,14 @@ export interface BudgetEnvelopeRecord {
  * New Phase 5.0A model calls bind to one multi-dimensional budget envelope.
  * The Phase 4 single-dimension reservation id remains optional only for
  * reading/migrating old records; new canonical writes require envelope id.
+ * `structured_output` is provider-neutral durable evidence used to replay an
+ * already-succeeded logical turn after a process crash without re-calling the
+ * model provider. Workflow-core validates it before treating it as a proposal.
  */
 export type Phase5ModelInvocationRecord = Omit<ModelInvocationRecord, 'budget_reservation_id'> & {
   budget_reservation_id?: string;
   budget_envelope_id: string;
+  structured_output?: unknown;
 };
 
 /**
