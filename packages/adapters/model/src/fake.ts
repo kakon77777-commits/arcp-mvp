@@ -8,7 +8,6 @@ import type {
   PreparedModelCall,
 } from '@arcp/workflow-core';
 
-/** Phase 0 compatibility scripted turn. */
 export interface ScriptedTurn {
   actionIntents: ActionIntent[];
   memoryProposals?: unknown[];
@@ -21,25 +20,16 @@ export class ScriptExhaustedError extends Error {
   }
 }
 
-/**
- * Phase 0 synchronous compatibility adapter. Existing replay tests continue to
- * use this surface; Phase 4 code should prefer DeterministicModelAdapter.
- */
 export class FakeModelAdapter {
   private cursor = 0;
-
   constructor(private readonly script: ScriptedTurn[]) {}
-
   nextTurn(): ScriptedTurn {
     const turn = this.script[this.cursor];
     if (!turn) throw new ScriptExhaustedError();
     this.cursor += 1;
     return structuredClone(turn);
   }
-
-  reset(): void {
-    this.cursor = 0;
-  }
+  reset(): void { this.cursor = 0; }
 }
 
 export type DeterministicModelStep =
@@ -65,6 +55,24 @@ const LEGACY_TEST_LIMITS: ModelCallLimits = Object.freeze({
   maxActiveDurationMs: Number.MAX_SAFE_INTEGER,
 });
 
+function validateKnownUsage(step: DeterministicModelStep | undefined, limits: ModelCallLimits): void {
+  if (!step || 'error' in step) return;
+  const checks: Array<[string, number | undefined, number]> = [
+    ['inputTokens', step.usage.inputTokens, limits.maxInputTokens],
+    ['outputTokens', step.usage.outputTokens, limits.maxOutputTokens],
+    ['costMicros', step.usage.costMicros, limits.maxCostMicros],
+  ];
+  for (const [name, actual, limit] of checks) {
+    if (actual !== undefined && actual > limit) {
+      throw new WorkflowError(
+        'model_limit_contract_violated',
+        `deterministic ${name} usage ${actual} exceeds host limit ${limit}`,
+        false,
+      );
+    }
+  }
+}
+
 export class DeterministicModelAdapter implements ModelPort {
   private cursor = 0;
   readonly invocations: ModelTurnInput[] = [];
@@ -77,10 +85,7 @@ export class DeterministicModelAdapter implements ModelPort {
   ) {}
 
   async prepareCall(input: ModelTurnInput, limits: ModelCallLimits): Promise<PreparedModelCall> {
-    this.preparations.push({
-      input: structuredClone(input),
-      limits: structuredClone(limits),
-    });
+    this.preparations.push({ input: structuredClone(input), limits: structuredClone(limits) });
 
     for (const [name, value] of Object.entries(limits) as Array<[ModelCallLimitName, number]>) {
       if (!Number.isFinite(value) || value < 0) {
@@ -101,6 +106,8 @@ export class DeterministicModelAdapter implements ModelPort {
         );
       }
     }
+
+    validateKnownUsage(this.script[this.cursor], limits);
 
     let executed = false;
     return {
@@ -125,17 +132,11 @@ export class DeterministicModelAdapter implements ModelPort {
           error.name = step.error === 'ambiguous' ? 'AmbiguousModelInvocationError' : 'ModelTemporarilyUnavailableError';
           throw error;
         }
-
         return structuredClone(step);
       },
     };
   }
 
-  /**
-   * Temporary Phase 4 compatibility. Task 7 removes orchestrator dependence on
-   * this path; the large limits below are deterministic-test scaffolding, not a
-   * runtime security boundary.
-   */
   async deliberate(input: ModelTurnInput): Promise<ModelTurnProposal> {
     const prepared = await this.prepareCall(input, LEGACY_TEST_LIMITS);
     return prepared.execute();
