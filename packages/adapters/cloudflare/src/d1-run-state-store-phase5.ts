@@ -1,5 +1,5 @@
 import { canonicalize } from '@arcp/schema';
-import type { BudgetEnvelopeRecord } from '@arcp/schema';
+import type { BudgetEnvelopeRecord, Phase5ModelInvocationRecord } from '@arcp/schema';
 import type { D1DatabaseLike } from './d1-types.js';
 import { D1RunStateStore as Phase4D1RunStateStore } from './d1-run-state-store.js';
 import {
@@ -37,6 +37,12 @@ interface EnvelopeRow {
   envelope_json: string;
 }
 
+interface InvocationRow {
+  status: string | null;
+  budget_envelope_id: string | null;
+  invocation_json: string;
+}
+
 function envelopeBinding(record: BudgetEnvelopeRecord): unknown {
   return {
     envelope_id: record.envelope_id,
@@ -46,6 +52,30 @@ function envelopeBinding(record: BudgetEnvelopeRecord): unknown {
     items: record.items.map(({ dimension, reserved }) => ({ dimension, reserved })),
     reserved_at: record.reserved_at,
   };
+}
+
+function canTransitionInvocation(
+  from: Phase5ModelInvocationRecord['status'],
+  to: Phase5ModelInvocationRecord['status'],
+): boolean {
+  if (from === 'reserved') return to === 'calling' || to === 'failed';
+  if (from === 'calling') return to === 'succeeded' || to === 'failed' || to === 'unknown';
+  return false;
+}
+
+function assertSameInvocationBinding(
+  current: Phase5ModelInvocationRecord,
+  next: Phase5ModelInvocationRecord,
+): void {
+  if (
+    next.invocation_id !== current.invocation_id
+    || next.run_id !== current.run_id
+    || next.turn_index !== current.turn_index
+    || next.budget_envelope_id !== current.budget_envelope_id
+    || next.input_hash !== current.input_hash
+  ) {
+    throw new WorkflowError('invalid_persisted_state', `model invocation binding changed: ${current.invocation_id}`, false);
+  }
 }
 
 function mapEnvelopeSqlError(error: unknown): never {
@@ -251,6 +281,79 @@ export class Phase5D1RunStateStore
       `SELECT envelope_json FROM arcp_budget_envelopes WHERE envelope_id = ?`,
     ).bind(envelopeId).first<EnvelopeRow>();
     return row ? JSON.parse(row.envelope_json) as BudgetEnvelopeRecord : null;
+  }
+
+  async createModelInvocation(record: Phase5ModelInvocationRecord): Promise<Phase5ModelInvocationRecord> {
+    if ((await this.getRun(record.run_id)) === null) {
+      throw new WorkflowError('invalid_persisted_state', `run not found: ${record.run_id}`, false);
+    }
+    const result = await this.phase5Db.prepare(
+      `INSERT OR IGNORE INTO arcp_model_invocations
+       (invocation_id, run_id, status, budget_envelope_id, invocation_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).bind(
+      record.invocation_id,
+      record.run_id,
+      record.status,
+      record.budget_envelope_id,
+      JSON.stringify(record),
+    ).run();
+    if ((result.meta?.changes ?? 0) === 0) {
+      const existing = await this.getModelInvocation(record.invocation_id);
+      if (!existing || canonicalize(existing) !== canonicalize(record)) {
+        throw new WorkflowError('invalid_persisted_state', `model invocation id collision: ${record.invocation_id}`, false);
+      }
+      return existing;
+    }
+    return structuredClone(record);
+  }
+
+  async getModelInvocation(invocationId: string): Promise<Phase5ModelInvocationRecord | null> {
+    const row = await this.phase5Db.prepare(
+      `SELECT status, budget_envelope_id, invocation_json
+       FROM arcp_model_invocations WHERE invocation_id = ?`,
+    ).bind(invocationId).first<InvocationRow>();
+    if (!row) return null;
+    if (!row.status || !row.budget_envelope_id) {
+      throw new WorkflowError('invalid_persisted_state', `Phase 5 model invocation lacks lifecycle fields: ${invocationId}`, false);
+    }
+    const parsed = JSON.parse(row.invocation_json) as Phase5ModelInvocationRecord;
+    return {
+      ...parsed,
+      status: row.status as Phase5ModelInvocationRecord['status'],
+      budget_envelope_id: row.budget_envelope_id,
+    };
+  }
+
+  async transitionModelInvocation(
+    invocationId: string,
+    expectedStatus: Phase5ModelInvocationRecord['status'],
+    next: Phase5ModelInvocationRecord,
+  ): Promise<Phase5ModelInvocationRecord> {
+    const current = await this.getModelInvocation(invocationId);
+    if (!current || current.status !== expectedStatus) {
+      throw new WorkflowError('invalid_persisted_state', `stale model invocation transition: ${invocationId}`, false);
+    }
+    assertSameInvocationBinding(current, next);
+    if (!canTransitionInvocation(current.status, next.status)) {
+      throw new WorkflowError('invalid_persisted_state', `invalid model invocation transition: ${current.status} -> ${next.status}`, false);
+    }
+
+    const result = await this.phase5Db.prepare(
+      `UPDATE arcp_model_invocations
+       SET status = ?, budget_envelope_id = ?, invocation_json = ?
+       WHERE invocation_id = ? AND status = ?`,
+    ).bind(
+      next.status,
+      next.budget_envelope_id,
+      JSON.stringify(next),
+      invocationId,
+      expectedStatus,
+    ).run();
+    if ((result.meta?.changes ?? 0) !== 1) {
+      throw new WorkflowError('invalid_persisted_state', `stale model invocation transition: ${invocationId}`, false);
+    }
+    return structuredClone(next);
   }
 
   private async requireEnvelope(envelopeId: string, runId: string): Promise<BudgetEnvelopeRecord> {
