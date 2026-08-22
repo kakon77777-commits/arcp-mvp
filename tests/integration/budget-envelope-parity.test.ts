@@ -72,6 +72,40 @@ describe('Phase 5.0A budget-envelope store parity', () => {
     );
   });
 
+  it('conservatively settles recovery-required envelopes with the same semantics in memory and D1', async () => {
+    const memory = new InMemoryRunStateStore();
+    const d1 = new D1RunStateStore(createFakeD1Database(`${migration1}\n${migration2}\n${migration3}`));
+
+    for (const store of [memory, d1]) {
+      await store.createRunIfAbsent(run());
+      await store.reserveBudgetEnvelope({
+        runId: run().run_id,
+        fencingToken: 7,
+        envelopeId: 'envelope:parity:recovery',
+        kind: 'model-call',
+        items: [
+          { dimension: 'turns', amount: 1 },
+          { dimension: 'model_output_tokens', amount: 1000 },
+        ],
+        reservedAt: now,
+      });
+      await store.markBudgetEnvelopeRecoveryRequired(run().run_id, 'envelope:parity:recovery');
+      await store.settleBudgetEnvelope({
+        runId: run().run_id,
+        envelopeId: 'envelope:parity:recovery',
+        actuals: { turns: 1, model_output_tokens: 1000 },
+        settledAt: now,
+      });
+    }
+
+    expect(await d1.getBudgetView(run().run_id)).toEqual(await memory.getBudgetView(run().run_id));
+    expect(await d1.getBudgetEnvelope('envelope:parity:recovery')).toEqual(
+      await memory.getBudgetEnvelope('envelope:parity:recovery'),
+    );
+    expect((await d1.getBudgetView(run().run_id)).model_output_tokens)
+      .toMatchObject({ reserved: 0, consumed: 1000, released: 0 });
+  });
+
   it('rejects stale fencing without creating or reserving an envelope', async () => {
     const d1 = new D1RunStateStore(createFakeD1Database(`${migration1}\n${migration2}\n${migration3}`));
     await d1.createRunIfAbsent(run());
