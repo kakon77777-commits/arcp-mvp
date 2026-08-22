@@ -1,7 +1,8 @@
 export * from './coordinator-transport.js';
 export * from './d1-types.js';
 export * from './d1-metadata-store.js';
-export * from './d1-run-state-store.js';
+export { D1RunStateStore as Phase4D1RunStateStore } from './d1-run-state-store.js';
+export { Phase5D1RunStateStore as D1RunStateStore } from './d1-run-state-store-phase5.js';
 export * from './r2-types.js';
 export * from './r2-object-store.js';
 export * from './agent-durable-object-core.js';
