@@ -2,6 +2,7 @@ import type {
   ActionIntent,
   ActionReceipt,
   AuthorityResolution,
+  BudgetEnvelopeKind,
   InstantRef,
   PolicyResult,
   ResidenceManifest,
@@ -10,7 +11,7 @@ import type {
   RunRecord,
   WakeRecord,
 } from '@arcp/schema';
-import type { RunBudgetView } from './budget.js';
+import type { BudgetDimension, RunBudgetView } from './budget.js';
 
 export interface HydratedRunContext {
   baseManifestVersion: number | null;
@@ -39,6 +40,41 @@ export interface ModelTurnProposal {
     outputTokens?: number;
     costMicros?: number;
   };
+}
+
+/** Host-owned hard ceilings for one prepared model call. */
+export interface ModelCallLimits {
+  maxOutputTokens: number;
+  maxInputTokens: number;
+  maxCostMicros: number;
+  maxActiveDurationMs: number;
+}
+
+/** Process-local capability returned only after zero-I/O provider preflight. */
+export interface PreparedModelCall {
+  execute(): Promise<ModelTurnProposal>;
+}
+
+export interface ReserveBudgetEnvelopeInput {
+  runId: string;
+  fencingToken: number;
+  envelopeId: string;
+  kind: BudgetEnvelopeKind;
+  items: Array<{ dimension: BudgetDimension; amount: number }>;
+  reservedAt: InstantRef;
+}
+
+export interface SettleBudgetEnvelopeInput {
+  runId: string;
+  envelopeId: string;
+  actuals: Partial<Record<BudgetDimension, number>>;
+  settledAt: InstantRef;
+}
+
+export interface ReleaseBudgetEnvelopeInput {
+  runId: string;
+  envelopeId: string;
+  releasedAt: InstantRef;
 }
 
 export interface WakeAuthorityInput {

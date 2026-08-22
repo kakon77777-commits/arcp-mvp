@@ -26,15 +26,31 @@ import type {
   CanonicalRunCommitInput,
   HydratedRunContext,
   HydrationInput,
+  ModelCallLimits,
   ModelTurnInput,
   ModelTurnProposal,
   PolicyEvaluationOptions,
+  PreparedModelCall,
   WakeAuthorityInput,
   WakeAuthorityResult,
 } from './types.js';
 
+export interface ProvenanceClockPort {
+  now(): InstantRef;
+}
+
+export interface MonotonicClockPort {
+  nowMs(): number;
+}
+
+/**
+ * Transitional Phase 4/5 model contract. The orchestrator still calls
+ * deliberate() until Task 7; prepareCall() exposes the zero-I/O preflight
+ * boundary required by Phase 5.0A without breaking the existing runtime.
+ */
 export interface ModelPort {
   deliberate(input: ModelTurnInput): Promise<ModelTurnProposal>;
+  prepareCall?(input: ModelTurnInput, limits: ModelCallLimits): Promise<PreparedModelCall>;
 }
 
 export interface ContextHydratorPort {

@@ -1,17 +1,25 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { D1DatabaseLike, D1PreparedStatementLike, D1RunResultLike } from '@arcp/adapter-cloudflare';
 
+export interface MutableFakeD1Database extends D1DatabaseLike {
+  /** Test-only escape hatch used to apply a later migration to the same SQLite database. */
+  exec(sql: string): void;
+}
+
 /**
  * A D1DatabaseLike backed by Node's real built-in SQLite engine (node:sqlite,
  * stable since Node 22.5). D1 is itself SQLite-compatible, so this exercises
  * genuine constraint/CAS semantics instead of a hand-rolled reimplementation
  * of SQL that could silently diverge from real D1 behavior.
  */
-export function createFakeD1Database(migrationSql: string): D1DatabaseLike {
+export function createFakeD1Database(migrationSql: string): MutableFakeD1Database {
   const db = new DatabaseSync(':memory:');
   db.exec(migrationSql);
 
   return {
+    exec(sql: string): void {
+      db.exec(sql);
+    },
     prepare(query: string): D1PreparedStatementLike {
       let boundValues: unknown[] = [];
       const statement: D1PreparedStatementLike = {

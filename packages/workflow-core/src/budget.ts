@@ -34,7 +34,15 @@ export interface BudgetCounterView {
   released: number;
 }
 
+/** Phase 4 compatibility view; becomes complete at the orchestrator cutover. */
 export type RunBudgetView = Partial<Record<BudgetDimension, BudgetCounterView>>;
+
+/** Authoritative Phase 5.0A view returned by durable stores. */
+export type CompleteRunBudgetView = Record<BudgetDimension, BudgetCounterView>;
+
+export function budgetAvailable(counter: BudgetCounterView): number {
+  return Math.max(0, counter.limit - counter.consumed - counter.reserved);
+}
 
 export interface BudgetReservation {
   reservationId: string;
