@@ -72,6 +72,17 @@ describe('Phase 4/5 staged model port', () => {
     expect(model.executions).toBe(0);
   });
 
+  it('rejects a deterministically-known ceiling violation before provider execution', async () => {
+    const model = new DeterministicModelAdapter([
+      { actionIntents: [], usage: { inputTokens: 10, outputTokens: 1001, costMicros: 20 } },
+    ]);
+
+    await expect(model.prepareCall!(input, limits))
+      .rejects.toMatchObject({ code: 'model_limit_contract_violated' });
+    expect(model.preparations).toHaveLength(1);
+    expect(model.executions).toBe(0);
+  });
+
   it('preserves Phase 0 synchronous FakeModelAdapter behavior', () => {
     const legacy = new FakeModelAdapter([{ actionIntents: [] }]);
     expect(legacy.nextTurn()).toEqual({ actionIntents: [] });
