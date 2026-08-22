@@ -33,6 +33,14 @@ import type {
   WakeAuthorityResult,
 } from './types.js';
 
+export interface ProvenanceClockPort {
+  now(): InstantRef;
+}
+
+export interface MonotonicClockPort {
+  nowMs(): number;
+}
+
 export interface ModelPort {
   deliberate(input: ModelTurnInput): Promise<ModelTurnProposal>;
 }
